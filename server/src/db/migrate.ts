@@ -99,7 +99,9 @@ CREATE TABLE IF NOT EXISTS studio_layers (
 -- Generation jobs
 CREATE TABLE IF NOT EXISTS generation_jobs (
   id TEXT PRIMARY KEY,
+  user_id TEXT,
   track_id TEXT REFERENCES tracks(id) ON DELETE SET NULL,
+  acestep_task_id TEXT,
   status TEXT DEFAULT 'pending',
   params TEXT,
   result TEXT,
