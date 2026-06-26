@@ -106,20 +106,13 @@ async function prepareAudioFile(audioUrl: string | undefined): Promise<unknown> 
   if (!audioUrl) return null;
 
   const filePath = resolveAudioPath(audioUrl);
+  const absolutePath = path.resolve(filePath);
 
   try {
-    const buffer = await readFile(filePath);
-    const ext = path.extname(filePath).toLowerCase();
-    const mimeMap: Record<string, string> = {
-      '.flac': 'audio/flac', '.wav': 'audio/wav', '.ogg': 'audio/ogg',
-      '.opus': 'audio/opus', '.m4a': 'audio/mp4', '.mp4': 'audio/mp4',
-    };
-    const mimeType = mimeMap[ext] || 'audio/mpeg';
-    const blob = new Blob([buffer], { type: mimeType });
-    return handle_file(blob);
+    return handle_file(absolutePath);
   } catch (error) {
-    console.warn(`[Gradio] Failed to read audio file ${filePath}:`, error);
-    // Fall back to URL-based reference if file can't be read locally
+    console.warn(`[Gradio] Failed to prepare audio file ${absolutePath}:`, error);
+    // Fall back to URL-based reference if file can't be prepared locally
     if (audioUrl.startsWith('http')) {
       return handle_file(audioUrl);
     }
@@ -331,6 +324,7 @@ interface GenerationResult {
   keyScale?: string;
   timeSignature?: string;
   status: string;
+  track?: { id: string; title: string; audio_url: string };
 }
 
 interface JobStatus {
@@ -472,6 +466,12 @@ export async function generateMusicViaAPI(params: GenerationParams): Promise<{ j
   return { jobId };
 }
 
+function sanitizeGradioPayload(payload: Record<string, unknown>): Record<string, unknown> {
+  return Object.fromEntries(
+    Object.entries(payload).filter(([, v]) => v !== undefined && v !== null && v !== '')
+  );
+}
+
 // ---------------------------------------------------------------------------
 // processGeneration — Gradio primary, Python spawn fallback
 // ---------------------------------------------------------------------------
@@ -531,6 +531,17 @@ async function processGenerationViaGradio(
   });
 
   job.stage = 'Generating music via Gradio...';
+
+  // Sanitize named payload parameters before Gradio submission
+  const gradioPayload = sanitizeGradioPayload({
+    prompt,
+    referenceAudio: params.referenceAudioUrl,
+    sourceAudio: params.sourceAudioUrl,
+    audioCoverStrength: params.audioCoverStrength,
+    taskType: params.taskType,
+    ditModel: params.ditModel,
+  });
+  console.log(`Job ${jobId}: Submitting to Gradio`, gradioPayload);
 
   // predict() blocks until generation is complete
   const result = await client.predict('/generation_wrapper', args);
@@ -697,7 +708,7 @@ async function processGenerationViaPython(
     if (params.audioCodes) args.push('--audio-codes', params.audioCodes);
     if (params.repaintingStart !== undefined && params.repaintingStart > 0) args.push('--repainting-start', String(params.repaintingStart));
     if (params.repaintingEnd !== undefined && params.repaintingEnd > 0) args.push('--repainting-end', String(params.repaintingEnd));
-    if (params.taskType === 'cover' || params.taskType === 'repaint' || params.sourceAudioUrl) {
+    if (params.taskType === 'cover' || params.taskType === 'repaint' || params.sourceAudioUrl || params.referenceAudioUrl) {
       args.push('--audio-cover-strength', String(params.audioCoverStrength ?? 1.0));
     } else if (params.audioCoverStrength !== undefined && params.audioCoverStrength !== 1.0) {
       args.push('--audio-cover-strength', String(params.audioCoverStrength));
@@ -709,7 +720,8 @@ async function processGenerationViaPython(
     if (params.lmTopK !== undefined && params.lmTopK > 0) args.push('--lm-top-k', String(params.lmTopK));
     if (params.lmTopP !== undefined) args.push('--lm-top-p', String(params.lmTopP));
     if (params.lmNegativePrompt) args.push('--lm-negative-prompt', params.lmNegativePrompt);
-    // Note: --lm-backend and --lm-model are not supported by simple_generate.py
+    if (params.ditModel) args.push('--dit-model', params.ditModel);
+    if (params.lmModel) args.push('--lm-model', params.lmModel);
     if (params.useCotMetas === false) args.push('--no-cot-metas');
     if (params.useCotCaption === false) args.push('--no-cot-caption');
     if (params.useCotLanguage === false) args.push('--no-cot-language');

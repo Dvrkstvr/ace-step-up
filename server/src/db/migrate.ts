@@ -1,49 +1,105 @@
 import { db } from './pool.js';
 
 const migrations = `
--- Users table (simplified - no credits, no stripe, no tiers)
-CREATE TABLE IF NOT EXISTS users (
+-- Drop legacy SaaS tables
+DROP TABLE IF EXISTS playlist_songs;
+DROP TABLE IF EXISTS playlists;
+DROP TABLE IF EXISTS liked_songs;
+DROP TABLE IF EXISTS comments;
+DROP TABLE IF EXISTS followers;
+DROP TABLE IF EXISTS contact_submissions;
+DROP TABLE IF EXISTS generation_jobs;
+DROP TABLE IF EXISTS reference_tracks;
+DROP TABLE IF EXISTS songs;
+DROP TABLE IF EXISTS users;
+
+-- Workspaces
+CREATE TABLE IF NOT EXISTS workspaces (
   id TEXT PRIMARY KEY,
-  username TEXT UNIQUE NOT NULL,
-  bio TEXT,
-  avatar_url TEXT,
-  banner_url TEXT,
-  is_admin INTEGER DEFAULT 0,
+  name TEXT NOT NULL,
+  type TEXT DEFAULT 'General',
   created_at TEXT DEFAULT (datetime('now')),
   updated_at TEXT DEFAULT (datetime('now'))
 );
 
--- Songs table
-CREATE TABLE IF NOT EXISTS songs (
+-- Projects (a "Song" — promoted from a track)
+CREATE TABLE IF NOT EXISTS projects (
   id TEXT PRIMARY KEY,
-  user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+  name TEXT NOT NULL,
+  created_at TEXT DEFAULT (datetime('now')),
+  updated_at TEXT DEFAULT (datetime('now'))
+);
+
+-- Tracks
+CREATE TABLE IF NOT EXISTS tracks (
+  id TEXT PRIMARY KEY,
+  workspace_id TEXT REFERENCES workspaces(id) ON DELETE SET NULL,
+  project_id TEXT REFERENCES projects(id) ON DELETE SET NULL,
+  parent_track_id TEXT REFERENCES tracks(id) ON DELETE SET NULL,
   title TEXT NOT NULL,
+  audio_url TEXT,
+  task_type TEXT DEFAULT 'text2music',
+  prompt TEXT,
   lyrics TEXT,
   style TEXT,
-  caption TEXT,
-  cover_url TEXT,
-  audio_url TEXT,
   duration INTEGER,
   bpm INTEGER,
   key_scale TEXT,
   time_signature TEXT,
+  parameters TEXT DEFAULT '{}',
+  seed INTEGER,
+  cover_url TEXT,
   tags TEXT DEFAULT '[]',
-  is_public INTEGER DEFAULT 0,
-  is_featured INTEGER DEFAULT 0,
-  like_count INTEGER DEFAULT 0,
-  view_count INTEGER DEFAULT 0,
-  has_video INTEGER DEFAULT 0,
-  video_url TEXT,
-  generation_params TEXT,
   created_at TEXT DEFAULT (datetime('now')),
   updated_at TEXT DEFAULT (datetime('now'))
 );
 
--- Generation jobs table (simplified - no credit_reserved)
+-- Stems (instrument-separated audio from a track)
+CREATE TABLE IF NOT EXISTS stems (
+  id TEXT PRIMARY KEY,
+  track_id TEXT NOT NULL REFERENCES tracks(id) ON DELETE CASCADE,
+  instrument_class TEXT NOT NULL,
+  audio_url TEXT NOT NULL,
+  is_custom INTEGER DEFAULT 0,
+  created_at TEXT DEFAULT (datetime('now'))
+);
+
+-- Studio Sessions (persistent DAW sessions)
+CREATE TABLE IF NOT EXISTS studio_sessions (
+  id TEXT PRIMARY KEY,
+  track_id TEXT NOT NULL REFERENCES tracks(id) ON DELETE CASCADE,
+  name TEXT,
+  is_active INTEGER DEFAULT 1,
+  created_at TEXT DEFAULT (datetime('now')),
+  updated_at TEXT DEFAULT (datetime('now'))
+);
+
+-- Studio Layers (audio layers within a session)
+CREATE TABLE IF NOT EXISTS studio_layers (
+  id TEXT PRIMARY KEY,
+  session_id TEXT NOT NULL REFERENCES studio_sessions(id) ON DELETE CASCADE,
+  stem_id TEXT REFERENCES stems(id) ON DELETE SET NULL,
+  parent_layer_id TEXT REFERENCES studio_layers(id) ON DELETE SET NULL,
+  source_type TEXT NOT NULL CHECK(source_type IN ('master', 'stem', 'upload', 'generated', 'repaint')),
+  name TEXT NOT NULL,
+  audio_url TEXT NOT NULL,
+  original_audio_url TEXT,
+  volume REAL DEFAULT 1.0,
+  is_muted INTEGER DEFAULT 0,
+  is_solo INTEGER DEFAULT 0,
+  is_locked INTEGER DEFAULT 0,
+  sort_order INTEGER DEFAULT 0,
+  region_start REAL,
+  region_end REAL,
+  generation_params TEXT,
+  created_at TEXT DEFAULT (datetime('now'))
+);
+
+-- Generation jobs
 CREATE TABLE IF NOT EXISTS generation_jobs (
   id TEXT PRIMARY KEY,
-  user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-  acestep_task_id TEXT,
+  track_id TEXT REFERENCES tracks(id) ON DELETE SET NULL,
   status TEXT DEFAULT 'pending',
   params TEXT,
   result TEXT,
@@ -52,58 +108,10 @@ CREATE TABLE IF NOT EXISTS generation_jobs (
   updated_at TEXT DEFAULT (datetime('now'))
 );
 
--- Playlists table
-CREATE TABLE IF NOT EXISTS playlists (
-  id TEXT PRIMARY KEY,
-  user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-  name TEXT NOT NULL,
-  description TEXT,
-  cover_url TEXT,
-  is_public INTEGER DEFAULT 1,
-  created_at TEXT DEFAULT (datetime('now')),
-  updated_at TEXT DEFAULT (datetime('now'))
-);
-
--- Playlist songs junction table
-CREATE TABLE IF NOT EXISTS playlist_songs (
-  playlist_id TEXT NOT NULL REFERENCES playlists(id) ON DELETE CASCADE,
-  song_id TEXT NOT NULL REFERENCES songs(id) ON DELETE CASCADE,
-  position INTEGER NOT NULL DEFAULT 0,
-  added_at TEXT DEFAULT (datetime('now')),
-  PRIMARY KEY (playlist_id, song_id)
-);
-
--- Liked songs table
-CREATE TABLE IF NOT EXISTS liked_songs (
-  user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-  song_id TEXT NOT NULL REFERENCES songs(id) ON DELETE CASCADE,
-  liked_at TEXT DEFAULT (datetime('now')),
-  PRIMARY KEY (user_id, song_id)
-);
-
--- Comments table
-CREATE TABLE IF NOT EXISTS comments (
-  id TEXT PRIMARY KEY,
-  song_id TEXT NOT NULL REFERENCES songs(id) ON DELETE CASCADE,
-  user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-  content TEXT NOT NULL,
-  created_at TEXT DEFAULT (datetime('now')),
-  updated_at TEXT DEFAULT (datetime('now'))
-);
-
--- Followers table
-CREATE TABLE IF NOT EXISTS followers (
-  follower_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-  following_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-  created_at TEXT DEFAULT (datetime('now')),
-  PRIMARY KEY (follower_id, following_id),
-  CHECK (follower_id != following_id)
-);
-
--- Reference tracks (uploaded audio for use as references)
+-- Reference tracks
 CREATE TABLE IF NOT EXISTS reference_tracks (
   id TEXT PRIMARY KEY,
-  user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  workspace_id TEXT REFERENCES workspaces(id) ON DELETE SET NULL,
   filename TEXT NOT NULL,
   storage_key TEXT NOT NULL,
   duration INTEGER,
@@ -112,33 +120,22 @@ CREATE TABLE IF NOT EXISTS reference_tracks (
   created_at TEXT DEFAULT (datetime('now'))
 );
 
--- Contact submissions table
-CREATE TABLE IF NOT EXISTS contact_submissions (
-  id TEXT PRIMARY KEY,
-  name TEXT NOT NULL,
-  email TEXT NOT NULL,
-  subject TEXT NOT NULL,
-  message TEXT NOT NULL,
-  category TEXT DEFAULT 'general',
-  is_read INTEGER DEFAULT 0,
-  created_at TEXT DEFAULT (datetime('now'))
-);
-
--- Indexes for performance
-CREATE INDEX IF NOT EXISTS idx_songs_user_id ON songs(user_id);
-CREATE INDEX IF NOT EXISTS idx_songs_created_at ON songs(created_at);
-CREATE INDEX IF NOT EXISTS idx_songs_is_public ON songs(is_public);
-CREATE INDEX IF NOT EXISTS idx_songs_is_featured ON songs(is_featured);
-CREATE INDEX IF NOT EXISTS idx_generation_jobs_user_id ON generation_jobs(user_id);
+-- Indexes
+CREATE INDEX IF NOT EXISTS idx_projects_workspace ON projects(workspace_id);
+CREATE INDEX IF NOT EXISTS idx_tracks_workspace ON tracks(workspace_id);
+CREATE INDEX IF NOT EXISTS idx_tracks_project ON tracks(project_id);
+CREATE INDEX IF NOT EXISTS idx_tracks_parent ON tracks(parent_track_id);
+CREATE INDEX IF NOT EXISTS idx_tracks_created ON tracks(created_at);
+CREATE INDEX IF NOT EXISTS idx_stems_track ON stems(track_id);
+CREATE INDEX IF NOT EXISTS idx_studio_sessions_track ON studio_sessions(track_id);
+CREATE INDEX IF NOT EXISTS idx_studio_layers_session ON studio_layers(session_id);
+CREATE INDEX IF NOT EXISTS idx_studio_layers_sort ON studio_layers(session_id, sort_order);
 CREATE INDEX IF NOT EXISTS idx_generation_jobs_status ON generation_jobs(status);
-CREATE INDEX IF NOT EXISTS idx_generation_jobs_created_at ON generation_jobs(created_at);
-CREATE INDEX IF NOT EXISTS idx_playlists_user_id ON playlists(user_id);
-CREATE INDEX IF NOT EXISTS idx_comments_song_id ON comments(song_id);
-CREATE INDEX IF NOT EXISTS idx_comments_created_at ON comments(created_at);
-CREATE INDEX IF NOT EXISTS idx_followers_follower ON followers(follower_id);
-CREATE INDEX IF NOT EXISTS idx_followers_following ON followers(following_id);
-CREATE INDEX IF NOT EXISTS idx_reference_tracks_user_id ON reference_tracks(user_id);
-CREATE INDEX IF NOT EXISTS idx_reference_tracks_created_at ON reference_tracks(created_at);
+CREATE INDEX IF NOT EXISTS idx_reference_tracks_workspace ON reference_tracks(workspace_id);
+
+-- Default workspace
+INSERT OR IGNORE INTO workspaces (id, name, type)
+VALUES ('default', 'My Music', 'General');
 `;
 
 function migrate(): void {

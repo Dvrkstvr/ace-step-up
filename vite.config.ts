@@ -21,10 +21,6 @@ export default defineConfig(({ mode }) => {
           target: 'http://127.0.0.1:3001',
           changeOrigin: true,
         },
-        '/blog': {
-          target: 'http://127.0.0.1:3001',
-          changeOrigin: true,
-        },
         '/demucs-web': {
           target: 'http://127.0.0.1:3001',
           changeOrigin: true,
@@ -35,10 +31,6 @@ export default defineConfig(({ mode }) => {
       exclude: ['@ffmpeg/ffmpeg', '@ffmpeg/util'],
     },
     plugins: [react()],
-    define: {
-      'process.env.API_KEY': JSON.stringify(env.GEMINI_API_KEY),
-      'process.env.GEMINI_API_KEY': JSON.stringify(env.GEMINI_API_KEY)
-    },
     resolve: {
       alias: {
         '@': path.resolve(__dirname, '.'),

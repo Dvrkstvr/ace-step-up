@@ -4,7 +4,6 @@ import {
   Edit3, Upload, X, Volume2, FileAudio, ChevronRight, Zap, Search,
   Cpu, Wand2, Settings, RefreshCw,
 } from 'lucide-react';
-import { useAuth } from '../context/AuthContext';
 import { useI18n } from '../context/I18nContext';
 import { trainingApi, getTrainingAudioUrl, TrainingSample, DatasetSettings } from '../services/api';
 
@@ -46,7 +45,6 @@ const PIPELINE_STEPS = [
 type PipelineStepKey = typeof PIPELINE_STEPS[number]['key'];
 
 export const TrainingPanel: React.FC = () => {
-  const { token } = useAuth();
   const { t } = useI18n();
 
   const [activeTab, setActiveTab] = useState<TrainingTab>('dataset');
@@ -210,8 +208,8 @@ export const TrainingPanel: React.FC = () => {
 
   // Load checkpoints on mount
   useEffect(() => {
-    if (!token) return;
-    trainingApi.getCheckpoints(token).then(result => {
+
+    trainingApi.getCheckpoints().then(result => {
       setModelCheckpoints(result.checkpoints);
       setModelConfigs(result.configs);
       if (result.checkpoints.length > 0 && !selectedCheckpoint) {
@@ -221,20 +219,20 @@ export const TrainingPanel: React.FC = () => {
         setSelectedConfig(result.configs[0]);
       }
     }).catch(() => { /* ignore */ });
-  }, [token]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   // === Model init ===
   const handleRefreshCheckpoints = useCallback(async () => {
-    if (!token) return;
+
     try {
-      const result = await trainingApi.getCheckpoints(token);
+      const result = await trainingApi.getCheckpoints();
       setModelCheckpoints(result.checkpoints);
       setModelConfigs(result.configs);
     } catch { /* ignore */ }
-  }, [token]);
+  }, []);
 
   const handleInitModel = useCallback(async () => {
-    if (!token) return;
+
     setModelInitializing(true);
     setModelInitStatus('Initializing model...');
     try {
@@ -250,7 +248,7 @@ export const TrainingPanel: React.FC = () => {
         offloadDitToCpu,
         compileModel,
         quantization,
-      }, token);
+      });
       setModelInitStatus(result.status || result.error || '');
     } catch (error) {
       const msg = error instanceof Error ? error.message : 'Failed';
@@ -258,7 +256,7 @@ export const TrainingPanel: React.FC = () => {
     } finally {
       setModelInitializing(false);
     }
-  }, [token, selectedCheckpoint, selectedConfig, selectedDevice, initLlm, lmModelPath, selectedBackend, useFlashAttention, offloadToCpu, offloadDitToCpu, compileModel, quantization]);
+  }, [selectedCheckpoint, selectedConfig, selectedDevice, initLlm, lmModelPath, selectedBackend, useFlashAttention, offloadToCpu, offloadDitToCpu, compileModel, quantization]);
 
   // === Drop zone handlers ===
   const handleDragOver = useCallback((e: React.DragEvent) => {
@@ -299,18 +297,18 @@ export const TrainingPanel: React.FC = () => {
 
   // === Upload + Build Dataset ===
   const handleUploadAndBuild = useCallback(async () => {
-    if (!token || queuedFiles.length === 0) return;
+    if (queuedFiles.length === 0) return;
     setUploading(true);
     setUploadStatus('Uploading files...');
     try {
-      await trainingApi.uploadAudio(queuedFiles, uploadDatasetName, token);
+      await trainingApi.uploadAudio(queuedFiles, uploadDatasetName);
       setUploadStatus(`Uploaded ${queuedFiles.length} files. Building dataset...`);
       const result = await trainingApi.buildDataset({
         datasetName: uploadDatasetName,
         customTag: datasetSettings.customTag,
         tagPosition: datasetSettings.tagPosition,
         allInstrumental: datasetSettings.allInstrumental,
-      }, token);
+      });
       setDatasetLoaded(true);
       setSampleCount(result.sampleCount);
       setCurrentSampleIdx(0);
@@ -332,11 +330,11 @@ export const TrainingPanel: React.FC = () => {
     } finally {
       setUploading(false);
     }
-  }, [token, queuedFiles, uploadDatasetName, datasetSettings, markStep]);
+  }, [queuedFiles, uploadDatasetName, datasetSettings, markStep]);
 
   // === Scan directory ===
   const handleScanDirectory = useCallback(async () => {
-    if (!token || !scanDir) return;
+    if (!scanDir) return;
     setScanning(true);
     setScanStatus('Scanning...');
     try {
@@ -346,7 +344,7 @@ export const TrainingPanel: React.FC = () => {
         customTag: datasetSettings.customTag,
         tagPosition: datasetSettings.tagPosition,
         allInstrumental: datasetSettings.allInstrumental,
-      }, token);
+      });
       setScanStatus(result.status);
       setSampleCount(result.sampleCount);
       if (result.dataframe) parseDataframe(result.dataframe);
@@ -355,15 +353,15 @@ export const TrainingPanel: React.FC = () => {
     } finally {
       setScanning(false);
     }
-  }, [token, scanDir, datasetSettings]);
+  }, [scanDir, datasetSettings]);
 
   // === Load existing dataset ===
   const handleLoadDataset = useCallback(async () => {
-    if (!token || !datasetPath) return;
+    if (!datasetPath) return;
     setDatasetLoading(true);
     setDatasetStatus(t('loadingDataset'));
     try {
-      const result = await trainingApi.loadDataset(datasetPath, token);
+      const result = await trainingApi.loadDataset(datasetPath);
       setDatasetLoaded(true);
       setSampleCount(result.sampleCount);
       setCurrentSampleIdx(0);
@@ -379,11 +377,11 @@ export const TrainingPanel: React.FC = () => {
     } finally {
       setDatasetLoading(false);
     }
-  }, [token, datasetPath, t, markStep]);
+  }, [datasetPath, t, markStep]);
 
   // === Auto-label ===
   const handleAutoLabel = useCallback(async () => {
-    if (!token) return;
+
     setAutoLabeling(true);
     setAutoLabelStatus(t('autoLabeling'));
     try {
@@ -392,12 +390,12 @@ export const TrainingPanel: React.FC = () => {
         formatLyrics,
         transcribeLyrics,
         onlyUnlabeled,
-      }, token);
+      });
       if (result.dataframe) parseDataframe(result.dataframe);
       setAutoLabelStatus(result.status || result.hint || '');
       // Refresh current sample
-      if (token && sampleCount > 0) {
-        const sample = await trainingApi.getSamplePreview(currentSampleIdx, token);
+      if (sampleCount > 0) {
+        const sample = await trainingApi.getSamplePreview(currentSampleIdx);
         setCurrentSample(sample);
         populateSampleFields(sample);
       }
@@ -407,24 +405,24 @@ export const TrainingPanel: React.FC = () => {
     } finally {
       setAutoLabeling(false);
     }
-  }, [token, skipMetas, formatLyrics, transcribeLyrics, onlyUnlabeled, sampleCount, currentSampleIdx, t]);
+  }, [skipMetas, formatLyrics, transcribeLyrics, onlyUnlabeled, sampleCount, currentSampleIdx, t]);
 
   // === Sample navigation ===
   const handleSampleNavigate = useCallback(async (idx: number) => {
-    if (!token || idx < 0 || idx >= sampleCount) return;
+    if (idx < 0 || idx >= sampleCount) return;
     setCurrentSampleIdx(idx);
     try {
-      const sample = await trainingApi.getSamplePreview(idx, token);
+      const sample = await trainingApi.getSamplePreview(idx);
       setCurrentSample(sample);
       populateSampleFields(sample);
     } catch (error) {
       console.error('Failed to load sample:', error);
     }
-  }, [token, sampleCount]);
+  }, [sampleCount]);
 
   // === Save sample ===
   const handleSaveSample = useCallback(async () => {
-    if (!token) return;
+
     setSaving(true);
     try {
       const result = await trainingApi.saveSample({
@@ -438,7 +436,7 @@ export const TrainingPanel: React.FC = () => {
         timeSignature: editTimeSig,
         language: editLanguage,
         instrumental: editInstrumental,
-      }, token);
+      });
       if (result.dataframe) parseDataframe(result.dataframe);
       setEditSaveStatus(result.status as string);
       markStep('edit');
@@ -447,27 +445,27 @@ export const TrainingPanel: React.FC = () => {
     } finally {
       setSaving(false);
     }
-  }, [token, currentSampleIdx, editCaption, editGenre, editPromptOverride, editLyrics, editBpm, editKey, editTimeSig, editLanguage, editInstrumental, t, markStep]);
+  }, [currentSampleIdx, editCaption, editGenre, editPromptOverride, editLyrics, editBpm, editKey, editTimeSig, editLanguage, editInstrumental, t, markStep]);
 
   // === Update settings ===
   const handleUpdateSettings = useCallback(async () => {
-    if (!token) return;
+
     try {
       await trainingApi.updateSettings({
         customTag: datasetSettings.customTag,
         tagPosition: datasetSettings.tagPosition,
         allInstrumental: datasetSettings.allInstrumental,
         genreRatio: datasetSettings.genreRatio,
-      }, token);
+      });
       setDatasetStatus('Settings updated');
     } catch (error) {
       setDatasetStatus(`${t('error')}: ${error instanceof Error ? error.message : 'Failed'}`);
     }
-  }, [token, datasetSettings, t]);
+  }, [datasetSettings, t]);
 
   // === Save dataset ===
   const handleSaveDataset = useCallback(async () => {
-    if (!token) return;
+
     setSaving(true);
     setSaveStatus(t('savingDataset'));
     try {
@@ -478,7 +476,7 @@ export const TrainingPanel: React.FC = () => {
         tagPosition: datasetSettings.tagPosition,
         allInstrumental: datasetSettings.allInstrumental,
         genreRatio: datasetSettings.genreRatio,
-      }, token);
+      });
       setSaveStatus(result.status as string);
       if (result.path) setSavePath(result.path);
       markStep('save');
@@ -487,15 +485,15 @@ export const TrainingPanel: React.FC = () => {
     } finally {
       setSaving(false);
     }
-  }, [token, savePath, datasetSettings.datasetName, t, markStep]);
+  }, [savePath, datasetSettings.datasetName, t, markStep]);
 
   // === Load existing dataset for preprocessing (matches Gradio's load_existing_dataset_for_preprocess) ===
   const handleLoadDatasetForPreprocess = useCallback(async () => {
-    if (!token) return;
+
     setPreprocessDatasetLoading(true);
     setPreprocessDatasetStatus('Loading dataset for preprocessing...');
     try {
-      const result = await trainingApi.loadDataset(preprocessDatasetPath, token);
+      const result = await trainingApi.loadDataset(preprocessDatasetPath);
       setPreprocessDatasetStatus(result.status || `Loaded ${result.sampleCount} samples`);
       if (result.sampleCount) setSampleCount(result.sampleCount);
       if (result.dataframe) parseDataframe(result.dataframe);
@@ -504,18 +502,18 @@ export const TrainingPanel: React.FC = () => {
     } finally {
       setPreprocessDatasetLoading(false);
     }
-  }, [token, preprocessDatasetPath]);
+  }, [preprocessDatasetPath]);
 
   // === Preprocess ===
   const handlePreprocess = useCallback(async () => {
-    if (!token) return;
+
     setPreprocessing(true);
     setPreprocessStatus('Preprocessing...');
     try {
       const result = await trainingApi.preprocess({
         datasetPath: preprocessDatasetPath || savePath || datasetPath,
         outputDir: preprocessOutputDir,
-      }, token);
+      });
       setPreprocessStatus(result.message || result.status);
       markStep('preprocess');
     } catch (error) {
@@ -523,22 +521,22 @@ export const TrainingPanel: React.FC = () => {
     } finally {
       setPreprocessing(false);
     }
-  }, [token, preprocessDatasetPath, savePath, datasetPath, preprocessOutputDir, markStep]);
+  }, [preprocessDatasetPath, savePath, datasetPath, preprocessOutputDir, markStep]);
 
   // === Load tensors ===
   const handleLoadTensors = useCallback(async () => {
-    if (!token) return;
+
     try {
-      const result = await trainingApi.loadTensors(trainingParams.tensorDir, token);
+      const result = await trainingApi.loadTensors(trainingParams.tensorDir);
       setTrainingDatasetInfo(result.status);
     } catch (error) {
       setTrainingDatasetInfo(`Error: ${error instanceof Error ? error.message : 'Failed'}`);
     }
-  }, [token, trainingParams.tensorDir]);
+  }, [trainingParams.tensorDir]);
 
   // === Training ===
   const handleStartTraining = useCallback(async () => {
-    if (!token) return;
+
     setIsTraining(true);
     setTrainingProgress(t('startingTraining'));
     setTrainingLog('');
@@ -547,7 +545,7 @@ export const TrainingPanel: React.FC = () => {
       const result = await trainingApi.startTraining({
         ...trainingParams,
         resumeCheckpoint: trainingParams.resumeCheckpoint || null,
-      }, token);
+      });
       setTrainingProgress(result.progress as string);
       setTrainingLog(result.log as string);
       setTrainingMetrics(result.metrics);
@@ -557,29 +555,29 @@ export const TrainingPanel: React.FC = () => {
     } finally {
       setIsTraining(false);
     }
-  }, [token, trainingParams, t, markStep]);
+  }, [trainingParams, t, markStep]);
 
   const handleStopTraining = useCallback(async () => {
-    if (!token) return;
+
     try {
-      const result = await trainingApi.stopTraining(token);
+      const result = await trainingApi.stopTraining();
       setTrainingProgress(result.status as string);
       setIsTraining(false);
     } catch (error) {
       console.error('Failed to stop training:', error);
     }
-  }, [token]);
+  }, []);
 
   // === Export ===
   const handleExportLora = useCallback(async () => {
-    if (!token) return;
+
     setExporting(true);
     setExportStatus('Exporting...');
     try {
       const result = await trainingApi.exportLora({
         exportPath,
         loraOutputDir: exportOutputDir,
-      }, token);
+      });
       setExportStatus(result.status as string);
       markStep('export');
     } catch (error) {
@@ -587,7 +585,7 @@ export const TrainingPanel: React.FC = () => {
     } finally {
       setExporting(false);
     }
-  }, [token, exportPath, exportOutputDir, t, markStep]);
+  }, [exportPath, exportOutputDir, t, markStep]);
 
   // === Loss chart ===
   const lossChartSvg = useMemo(() => {

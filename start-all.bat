@@ -25,7 +25,7 @@ if not exist "server\node_modules" (
 
 REM Get ACE-Step path from environment or use default
 if "%ACESTEP_PATH%"=="" (
-    set ACESTEP_PATH=..\ACE-Step-1.5
+    set ACESTEP_PATH=S:\AI Gen\ACE-Step-1.5
 )
 
 REM Check if ACE-Step exists

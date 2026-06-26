@@ -152,6 +152,11 @@ interface GenerateBody {
 
   // Model selection
   ditModel?: string;
+
+  // Workspace/Project context
+  workspace_id?: string;
+  project_id?: string;
+  parent_track_id?: string;
 }
 
 router.post('/upload-audio', authMiddleware, (req: AuthenticatedRequest, res: Response, next: Function) => {
@@ -207,7 +212,7 @@ router.post('/upload-audio', authMiddleware, (req: AuthenticatedRequest, res: Re
   }
 });
 
-router.post('/', authMiddleware, async (req: AuthenticatedRequest, res: Response) => {
+router.post('/', async (req, res: Response) => {
   try {
     const {
       customMode,
@@ -265,6 +270,9 @@ router.post('/', authMiddleware, async (req: AuthenticatedRequest, res: Response
       completeTrackClasses,
       isFormatCaption,
       ditModel,
+      workspace_id,
+      project_id,
+      parent_track_id,
     } = req.body as GenerateBody;
 
     if (!customMode && !songDescription) {
@@ -333,6 +341,9 @@ router.post('/', authMiddleware, async (req: AuthenticatedRequest, res: Response
       completeTrackClasses,
       isFormatCaption,
       ditModel,
+      workspace_id,
+      project_id,
+      parent_track_id,
     };
 
     // Create job record in database
@@ -340,7 +351,7 @@ router.post('/', authMiddleware, async (req: AuthenticatedRequest, res: Response
     await pool.query(
       `INSERT INTO generation_jobs (id, user_id, status, params, created_at, updated_at)
        VALUES (?, ?, 'queued', ?, datetime('now'), datetime('now'))`,
-      [localJobId, req.user!.id, JSON.stringify(params)]
+      [localJobId, (req as any).user?.id ?? null, JSON.stringify(params)]
     );
 
     // Start generation
@@ -379,7 +390,7 @@ router.get('/status/:jobId', authMiddleware, async (req: AuthenticatedRequest, r
 
     const job = jobResult.rows[0];
 
-    if (job.user_id !== req.user!.id) {
+    if (job.user_id !== null && job.user_id !== req.user!.id) {
       res.status(403).json({ error: 'Access denied' });
       return;
     }
@@ -484,6 +495,41 @@ router.get('/status/:jobId', authMiddleware, async (req: AuthenticatedRequest, r
             }
 
             aceStatus.result.audioUrls = localPaths;
+
+            // Create a tracks row for workspace/project tracking
+            try {
+              const primaryAudioUrl = localPaths[0] || audioUrls[0];
+              if (primaryAudioUrl) {
+                const prompt = params.songDescription || params.style || '';
+                const trackTitle = prompt.slice(0, 60).trim() || 'Generated Track';
+                const trackId = generateUUID();
+                await pool.query(
+                  `INSERT INTO tracks (id, title, audio_url, workspace_id, project_id, parent_track_id, task_type, prompt, lyrics, style, duration, bpm, seed, parameters, tags, created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))`,
+                  [
+                    trackId,
+                    trackTitle,
+                    primaryAudioUrl,
+                    params.workspace_id || 'default',
+                    params.project_id || null,
+                    params.parent_track_id || null,
+                    params.taskType || null,
+                    prompt || null,
+                    params.lyrics || null,
+                    params.style || null,
+                    params.duration || null,
+                    params.bpm || null,
+                    params.seed || null,
+                    JSON.stringify(params),
+                    '[]',
+                  ]
+                );
+                aceStatus.result.track = { id: trackId, title: trackTitle, audio_url: primaryAudioUrl };
+              }
+            } catch (trackErr) {
+              console.error('Failed to create track record:', trackErr);
+            }
+
             cleanupJob(job.acestep_task_id);
           }
         }

@@ -21,11 +21,6 @@ export const config = {
     apiUrl: process.env.ACESTEP_API_URL || 'http://localhost:8001',
   },
 
-  // Pexels (optional - for video backgrounds)
-  pexels: {
-    apiKey: process.env.PEXELS_API_KEY || '',
-  },
-
   // Frontend URL
   frontendUrl: process.env.FRONTEND_URL || 'http://localhost:5173',
 
@@ -41,9 +36,8 @@ export const config = {
     uploadsDir: process.env.DATASETS_UPLOADS_DIR || path.join(__dirname, '../../../ACE-Step-1.5/datasets/uploads'),
   },
 
-  // Simplified JWT (for local session, not critical security)
-  jwt: {
-    secret: process.env.JWT_SECRET || 'ace-step-ui-local-secret',
-    expiresIn: '365d', // Long-lived for local app
+  // Python interpreter path
+  python: {
+    path: process.env.PYTHON_PATH || 'python3',
   },
 };

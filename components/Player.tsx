@@ -1,15 +1,12 @@
 import React, { useRef, useState, useEffect } from 'react';
-import { Song } from '../types';
-import { Play, Pause, SkipBack, SkipForward, Repeat, Shuffle, Download, Heart, MoreVertical, Volume2, VolumeX, Maximize2, Repeat1, ChevronDown, ChevronUp } from 'lucide-react';
-import { useAuth } from '../context/AuthContext';
+import { Track } from '../types';
+import { Play, Pause, SkipBack, SkipForward, Repeat, Shuffle, Download, Volume2, VolumeX, Maximize2, Repeat1, ChevronDown, ChevronUp } from 'lucide-react';
 import { useResponsive } from '../context/ResponsiveContext';
 import { useI18n } from '../context/I18nContext';
-import { SongDropdownMenu } from './SongDropdownMenu';
-import { ShareModal } from './ShareModal';
 import { AlbumCover } from './AlbumCover';
 
 interface PlayerProps {
-    currentSong: Song | null;
+    currentSong: Track | null;
     isPlaying: boolean;
     onTogglePlay: () => void;
     currentTime: number;
@@ -26,12 +23,8 @@ interface PlayerProps {
     onToggleShuffle: () => void;
     repeatMode: 'none' | 'all' | 'one';
     onToggleRepeat: () => void;
-    isLiked: boolean;
-    onToggleLike: () => void;
     onNavigateToSong?: (songId: string) => void;
-    onOpenVideo?: () => void;
     onReusePrompt?: () => void;
-    onAddToPlaylist?: () => void;
     onDelete?: () => void;
     onPlayFirst?: () => void;
 }
@@ -54,25 +47,16 @@ export const Player: React.FC<PlayerProps> = ({
     onToggleShuffle,
     repeatMode,
     onToggleRepeat,
-    isLiked,
-    onToggleLike,
     onNavigateToSong,
-    onOpenVideo,
-    onReusePrompt,
-    onAddToPlaylist,
-    onDelete,
     onPlayFirst
 }) => {
-    const { user } = useAuth();
     const { isMobile } = useResponsive();
     const { t } = useI18n();
     const progressBarRef = useRef<HTMLDivElement>(null);
     const fullscreenProgressRef = useRef<HTMLDivElement>(null);
     const [isHoveringVolume, setIsHoveringVolume] = useState(false);
     const volumeHideTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-    const [showDropdown, setShowDropdown] = useState(false);
     const [isFullscreen, setIsFullscreen] = useState(false);
-    const [shareModalOpen, setShareModalOpen] = useState(false);
     const [showSpeedMenu, setShowSpeedMenu] = useState(false);
     const speedMenuRef = useRef<HTMLDivElement>(null);
 
@@ -135,14 +119,14 @@ export const Player: React.FC<PlayerProps> = ({
     const progressPercent = duration ? (currentTime / duration) * 100 : 0;
 
     const handleDownload = async () => {
-        if (!currentSong?.audioUrl) return;
+        if (!currentSong?.audio_url) return;
         try {
-            const response = await fetch(currentSong.audioUrl);
+            const response = await fetch(currentSong.audio_url);
             const blob = await response.blob();
             const url = URL.createObjectURL(blob);
             const link = document.createElement('a');
             link.href = url;
-            link.download = `${currentSong.title || 'song'}.mp3`;
+            link.download = `${currentSong.title || 'track'}.mp3`;
             document.body.appendChild(link);
             link.click();
             document.body.removeChild(link);
@@ -171,41 +155,30 @@ export const Player: React.FC<PlayerProps> = ({
                     {/* Album Art */}
                     <div className="flex-1 flex items-center justify-center px-8 py-4">
                         <div className="w-full max-w-[280px] aspect-square rounded-lg overflow-hidden shadow-2xl">
-                            {currentSong.coverUrl ? (
+                            {currentSong.cover_url ? (
                                 <img
-                                    src={currentSong.coverUrl}
+                                    src={currentSong.cover_url}
                                     className="w-full h-full object-cover"
                                     alt="cover"
                                     onError={(e) => { e.currentTarget.style.display = 'none'; e.currentTarget.nextElementSibling?.classList.remove('hidden'); }}
                                 />
                             ) : null}
-                            <AlbumCover seed={currentSong.id || currentSong.title} size="full" className={`w-full h-full ${currentSong.coverUrl ? 'hidden' : ''}`} />
+                            <AlbumCover seed={currentSong.id || currentSong.title} size="full" className={`w-full h-full ${currentSong.cover_url ? 'hidden' : ''}`} />
                         </div>
                     </div>
 
-                    {/* Song Info */}
+                    {/* Track Info */}
                     <div className="px-6 mb-4">
-                        <div className="flex items-center justify-between">
-                            <div className="flex-1 min-w-0 mr-4">
-                                <h2
-                                    onClick={() => {
-                                        setIsFullscreen(false);
-                                        onNavigateToSong?.(currentSong.id);
-                                    }}
-                                    className="text-xl font-bold text-zinc-900 dark:text-white truncate"
-                                >
-                                    {currentSong.title}
-                                </h2>
-                                <p className="text-sm text-zinc-500 dark:text-white/60 truncate mt-1">
-                                    {currentSong.creator || 'Unknown Artist'}
-                                </p>
-                            </div>
-                            <button
-                                onClick={onToggleLike}
-                                className={`p-2 tap-highlight-none ${isLiked ? 'text-pink-600 dark:text-pink-500' : 'text-zinc-400 dark:text-white/50'}`}
+                        <div className="flex-1 min-w-0">
+                            <h2
+                                onClick={() => {
+                                    setIsFullscreen(false);
+                                    onNavigateToSong?.(currentSong.id);
+                                }}
+                                className="text-xl font-bold text-zinc-900 dark:text-white truncate"
                             >
-                                <Heart size={24} fill={isLiked ? "currentColor" : "none"} />
-                            </button>
+                                {currentSong.title}
+                            </h2>
                         </div>
                     </div>
 
@@ -290,11 +263,6 @@ export const Player: React.FC<PlayerProps> = ({
 
                     {/* Extra Actions */}
                     <div className="flex items-center justify-center gap-6 px-6 pb-6 text-zinc-400 dark:text-white/50">
-                        {onOpenVideo && (
-                            <button onClick={onOpenVideo} className="p-3 tap-highlight-none">
-                                <Maximize2 size={20} />
-                            </button>
-                        )}
                         <button
                             onClick={handleDownload}
                             className="p-3 tap-highlight-none"
@@ -302,37 +270,7 @@ export const Player: React.FC<PlayerProps> = ({
                         >
                             <Download size={20} />
                         </button>
-                        <button
-                            onClick={() => setShowDropdown(!showDropdown)}
-                            className="p-3 tap-highlight-none relative"
-                        >
-                            <MoreVertical size={20} />
-                        </button>
                     </div>
-
-                    {showDropdown && (
-                        <div className="absolute bottom-24 left-1/2 -translate-x-1/2">
-                            <SongDropdownMenu
-                                song={currentSong}
-                                isOpen={showDropdown}
-                                onClose={() => setShowDropdown(false)}
-                                isOwner={user?.id === currentSong.userId}
-                                position="center"
-                                direction="up"
-                                onCreateVideo={onOpenVideo}
-                                onReusePrompt={onReusePrompt}
-                                onAddToPlaylist={onAddToPlaylist}
-                                onDelete={onDelete}
-                                onShare={() => setShareModalOpen(true)}
-                            />
-                        </div>
-                    )}
-
-                    <ShareModal
-                        isOpen={shareModalOpen}
-                        onClose={() => setShareModalOpen(false)}
-                        song={currentSong}
-                    />
                 </div>
             );
         }
@@ -351,18 +289,18 @@ export const Player: React.FC<PlayerProps> = ({
                     />
                 </div>
 
-                {/* Main content: Song info left, controls right */}
+                {/* Main content: Track info left, controls right */}
                 <div className="flex items-center px-3 py-2 gap-3">
-                    {/* Song Info - takes available space, tap to expand */}
+                    {/* Track Info - takes available space, tap to expand */}
                     <div
                         className="flex items-center gap-3 flex-1 min-w-0"
                         onClick={() => setIsFullscreen(true)}
                     >
                         <div className="w-11 h-11 rounded bg-zinc-200 dark:bg-zinc-800 overflow-hidden shadow-sm flex-shrink-0 relative">
-                            {currentSong.coverUrl ? (
-                                <img src={currentSong.coverUrl} className="w-full h-full object-cover" alt="cover" onError={(e) => { e.currentTarget.style.display = 'none'; }} />
+                            {currentSong.cover_url ? (
+                                <img src={currentSong.cover_url} className="w-full h-full object-cover" alt="cover" onError={(e) => { e.currentTarget.style.display = 'none'; }} />
                             ) : null}
-                            {!currentSong.coverUrl && <AlbumCover seed={currentSong.id || currentSong.title} size="full" className="w-full h-full" />}
+                            {!currentSong.cover_url && <AlbumCover seed={currentSong.id || currentSong.title} size="full" className="w-full h-full" />}
                             <div className="absolute inset-0 flex items-center justify-center bg-black/20 opacity-0 active:opacity-100 transition-opacity">
                                 <ChevronUp size={20} className="text-white" />
                             </div>
@@ -371,20 +309,11 @@ export const Player: React.FC<PlayerProps> = ({
                             <h4 className="text-sm font-semibold text-zinc-900 dark:text-white truncate">
                                 {currentSong.title}
                             </h4>
-                            <p className="text-xs text-zinc-500 dark:text-zinc-400 truncate">
-                                {currentSong.creator || 'Unknown Artist'}
-                            </p>
                         </div>
                     </div>
 
                     {/* Mobile Controls - compact */}
                     <div className="flex items-center gap-1 flex-shrink-0">
-                        <button
-                            onClick={onToggleLike}
-                            className={`p-2 tap-highlight-none ${isLiked ? 'text-pink-600 dark:text-pink-500' : 'text-zinc-400'}`}
-                        >
-                            <Heart size={20} fill={isLiked ? "currentColor" : "none"} />
-                        </button>
                         <button
                             onClick={onPrevious}
                             className="p-2 text-zinc-700 dark:text-zinc-300 tap-highlight-none"
@@ -433,20 +362,20 @@ export const Player: React.FC<PlayerProps> = ({
                     <div className="flex flex-col lg:flex-row items-center gap-8 lg:gap-16 max-w-5xl w-full">
                         {/* Album Art */}
                         <div className="w-full max-w-[320px] lg:max-w-[400px] aspect-square rounded-lg overflow-hidden shadow-2xl flex-shrink-0">
-                            {currentSong.coverUrl ? (
+                            {currentSong.cover_url ? (
                                 <img
-                                    src={currentSong.coverUrl}
+                                    src={currentSong.cover_url}
                                     className="w-full h-full object-cover"
                                     alt="cover"
                                     onError={(e) => { e.currentTarget.style.display = 'none'; e.currentTarget.nextElementSibling?.classList.remove('hidden'); }}
                                 />
                             ) : null}
-                            <AlbumCover seed={currentSong.id || currentSong.title} size="full" className={`w-full h-full ${currentSong.coverUrl ? 'hidden' : ''}`} />
+                            <AlbumCover seed={currentSong.id || currentSong.title} size="full" className={`w-full h-full ${currentSong.cover_url ? 'hidden' : ''}`} />
                         </div>
 
-                        {/* Right side: Song info and controls */}
+                        {/* Right side: Track info and controls */}
                         <div className="flex flex-col items-center lg:items-start gap-6 flex-1 min-w-0 max-w-lg">
-                            {/* Song Info */}
+                            {/* Track Info */}
                             <div className="text-center lg:text-left w-full">
                                 <h2
                                     onClick={() => {
@@ -457,9 +386,6 @@ export const Player: React.FC<PlayerProps> = ({
                                 >
                                     {currentSong.title}
                                 </h2>
-                                <p className="text-base lg:text-lg text-zinc-500 dark:text-white/60 truncate mt-2">
-                                    {currentSong.creator || 'Unknown Artist'}
-                                </p>
                             </div>
 
                             {/* Progress Bar */}
@@ -579,63 +505,21 @@ export const Player: React.FC<PlayerProps> = ({
                             {/* Extra Actions */}
                             <div className="flex items-center justify-center gap-4 text-zinc-400 dark:text-white/50">
                                 <button
-                                    onClick={onToggleLike}
-                                    className={`p-3 rounded-full hover:bg-zinc-200 dark:hover:bg-white/10 transition-colors ${isLiked ? 'text-pink-600 dark:text-pink-500' : ''}`}
-                                >
-                                    <Heart size={22} fill={isLiked ? "currentColor" : "none"} />
-                                </button>
-                                {onOpenVideo && (
-                                    <button
-                                        onClick={onOpenVideo}
-                                        className="p-3 rounded-full hover:bg-zinc-200 dark:hover:bg-white/10 transition-colors"
-                                    >
-                                        <Maximize2 size={20} />
-                                    </button>
-                                )}
-                                <button
                                     onClick={handleDownload}
                                     className="p-3 rounded-full hover:bg-zinc-200 dark:hover:bg-white/10 transition-colors"
                                     title={t('downloadAudio')}
                                 >
                                     <Download size={20} />
                                 </button>
-                                <div className="relative">
-                                    <button
-                                        onClick={() => setShowDropdown(!showDropdown)}
-                                        className="p-3 rounded-full hover:bg-zinc-200 dark:hover:bg-white/10 transition-colors"
-                                    >
-                                        <MoreVertical size={20} />
-                                    </button>
-                                    {showDropdown && (
-                                        <SongDropdownMenu
-                                            song={currentSong}
-                                            isOpen={showDropdown}
-                                            onClose={() => setShowDropdown(false)}
-                                            isOwner={user?.id === currentSong.userId}
-                                            position="center"
-                                            direction="up"
-                                            onCreateVideo={onOpenVideo}
-                                            onReusePrompt={onReusePrompt}
-                                            onAddToPlaylist={onAddToPlaylist}
-                                            onDelete={onDelete}
-                                            onShare={() => setShareModalOpen(true)}
-                                        />
-                                    )}
-                                </div>
                             </div>
                         </div>
                     </div>
                 </div>
-
-                <ShareModal
-                    isOpen={shareModalOpen}
-                    onClose={() => setShareModalOpen(false)}
-                    song={currentSong}
-                />
             </div>
         );
     }
 
+    // Desktop normal player bar
     return (
         <div className="h-20 lg:h-24 bg-white dark:bg-black/95 backdrop-blur border-t border-zinc-200 dark:border-white/10 flex flex-col z-50 transition-colors duration-300 shadow-[0_-4px_6px_-1px_rgba(0,0,0,0.1)] dark:shadow-none">
 
@@ -657,13 +541,13 @@ export const Player: React.FC<PlayerProps> = ({
 
             <div className="flex-1 flex items-center justify-between px-2 sm:px-4 lg:px-6 gap-2 sm:gap-4">
 
-                {/* Song Info */}
+                {/* Track Info */}
                 <div className="flex items-center gap-2 sm:gap-3 min-w-0 flex-1 max-w-[30%] lg:max-w-[33%]">
                     <div className="w-10 h-10 lg:w-12 lg:h-12 rounded bg-zinc-200 dark:bg-zinc-800 overflow-hidden shadow-sm flex-shrink-0">
-                        {currentSong.coverUrl ? (
-                            <img src={currentSong.coverUrl} className="w-full h-full object-cover" alt="cover" onError={(e) => { e.currentTarget.style.display = 'none'; }} />
+                        {currentSong.cover_url ? (
+                            <img src={currentSong.cover_url} className="w-full h-full object-cover" alt="cover" onError={(e) => { e.currentTarget.style.display = 'none'; }} />
                         ) : null}
-                        {!currentSong.coverUrl && <AlbumCover seed={currentSong.id || currentSong.title} size="full" className="w-full h-full" />}
+                        {!currentSong.cover_url && <AlbumCover seed={currentSong.id || currentSong.title} size="full" className="w-full h-full" />}
                     </div>
                     <div className="overflow-hidden min-w-0">
                         <h4
@@ -672,14 +556,7 @@ export const Player: React.FC<PlayerProps> = ({
                         >
                             {currentSong.title}
                         </h4>
-                        <p className="text-[10px] sm:text-xs text-zinc-500 dark:text-zinc-400 truncate hover:underline cursor-pointer">{currentSong.creator || 'Unknown Artist'}</p>
                     </div>
-                    <button
-                        onClick={onToggleLike}
-                        className={`ml-1 sm:ml-2 transition-colors flex-shrink-0 hidden sm:block ${isLiked ? 'text-pink-600 dark:text-pink-500' : 'text-zinc-400 hover:text-zinc-900 dark:hover:text-white'}`}
-                    >
-                        <Heart size={18} fill={isLiked ? "currentColor" : "none"} />
-                    </button>
                 </div>
 
                 {/* Controls */}
@@ -811,35 +688,8 @@ export const Player: React.FC<PlayerProps> = ({
                     >
                         <Maximize2 size={16} />
                     </button>
-                    <div className="relative hidden sm:block">
-                        <button
-                            onClick={() => setShowDropdown(!showDropdown)}
-                            className="p-1.5 lg:p-2 hover:bg-zinc-100 dark:hover:bg-white/10 rounded-full transition-colors"
-                        >
-                            <MoreVertical size={18} />
-                        </button>
-                        <SongDropdownMenu
-                            song={currentSong}
-                            isOpen={showDropdown}
-                            onClose={() => setShowDropdown(false)}
-                            isOwner={user?.id === currentSong.userId}
-                            position="right"
-                            direction="up"
-                            onCreateVideo={onOpenVideo}
-                            onReusePrompt={onReusePrompt}
-                            onAddToPlaylist={onAddToPlaylist}
-                            onDelete={onDelete}
-                            onShare={() => setShareModalOpen(true)}
-                        />
-                    </div>
                 </div>
             </div>
-
-            <ShareModal
-                isOpen={shareModalOpen}
-                onClose={() => setShareModalOpen(false)}
-                song={currentSong}
-            />
         </div>
     );
 };
