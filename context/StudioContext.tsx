@@ -1,6 +1,6 @@
 import React, { createContext, useContext, useState, useCallback, ReactNode } from 'react';
 import { StudioSession, StudioLayer, Track, LayerSourceType } from '../types';
-import { studioApi } from '../services/api';
+import { studioApi, stemsApi } from '../services/api';
 
 interface StudioContextType {
   isOpen: boolean;
@@ -12,7 +12,7 @@ interface StudioContextType {
   closeStudio: () => void;
 
   addLayer: (data: Partial<StudioLayer> & { source_type: LayerSourceType; name: string; audio_url: string }) => Promise<void>;
-  updateLayer: (layerId: string, data: Partial<Pick<StudioLayer, 'name' | 'volume' | 'is_muted' | 'is_solo' | 'sort_order'>>) => Promise<void>;
+  updateLayer: (layerId: string, data: Partial<Pick<StudioLayer, 'name' | 'volume' | 'is_muted' | 'is_solo' | 'sort_order' | 'start_offset' | 'clip_start' | 'clip_end'>>) => Promise<void>;
   deleteLayer: (layerId: string) => Promise<void>;
   reorderLayers: (newOrder: StudioLayer[]) => void;
 
@@ -33,7 +33,38 @@ export function StudioProvider({ children }: { children: ReactNode }): React.Rea
   const openStudio = useCallback(async (track: Track): Promise<void> => {
     const s = await studioApi.getOrCreateSession(track.id);
     setSession(s);
-    setLayers(s.layers ?? []);
+
+    const isNewSession = (s.layers ?? []).length <= 1;
+    if (isNewSession) {
+      // Resolve stems: prefer stems already on the track object, fall back to API fetch
+      let stems = track.stems;
+      if (!stems || stems.length === 0) {
+        stems = await stemsApi.list(track.id).catch(() => []);
+      }
+
+      if (stems && stems.length > 0) {
+        await Promise.all(stems.map((stem, i) =>
+          studioApi.addLayer(s.id, {
+            source_type: 'stem',
+            name: stem.instrument_class.charAt(0).toUpperCase() + stem.instrument_class.slice(1),
+            audio_url: stem.audio_url,
+            stem_id: stem.id,
+            volume: 1.0,
+            is_muted: false,
+            is_solo: false,
+            is_locked: false,
+            sort_order: i + 1,
+          })
+        ));
+        const refreshed = await studioApi.getLayers(s.id);
+        setLayers(Array.isArray(refreshed) ? refreshed : (refreshed as any).layers ?? []);
+      } else {
+        setLayers(s.layers ?? []);
+      }
+    } else {
+      setLayers(s.layers ?? []);
+    }
+
     setIsOpen(true);
   }, []);
 
@@ -54,7 +85,7 @@ export function StudioProvider({ children }: { children: ReactNode }): React.Rea
 
   const updateLayer = useCallback(async (
     layerId: string,
-    data: Partial<Pick<StudioLayer, 'name' | 'volume' | 'is_muted' | 'is_solo' | 'sort_order'>>
+    data: Partial<Pick<StudioLayer, 'name' | 'volume' | 'is_muted' | 'is_solo' | 'sort_order' | 'start_offset' | 'clip_start' | 'clip_end'>>
   ): Promise<void> => {
     const updated = await studioApi.updateLayer(layerId, data);
     setLayers(prev => prev.map(l => l.id === layerId ? updated : l));
@@ -67,7 +98,6 @@ export function StudioProvider({ children }: { children: ReactNode }): React.Rea
 
   const reorderLayers = useCallback((newOrder: StudioLayer[]): void => {
     setLayers(newOrder);
-    // Optimistically update sort_order on each layer
     newOrder.forEach((layer, index) => {
       studioApi.updateLayer(layer.id, { sort_order: index }).catch(err => {
         console.error('Failed to update layer sort_order:', err);
@@ -79,7 +109,7 @@ export function StudioProvider({ children }: { children: ReactNode }): React.Rea
     await studioApi.revertLayer(layerId);
     if (!session) return;
     const refreshed = await studioApi.getLayers(session.id);
-    setLayers(refreshed);
+    setLayers(Array.isArray(refreshed) ? refreshed : (refreshed as any).layers ?? []);
   }, [session]);
 
   const mixdown = useCallback(async (

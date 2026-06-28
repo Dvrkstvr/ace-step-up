@@ -1,19 +1,27 @@
-import React, { useState } from 'react';
-import { ChevronLeft, ChevronRight, Music, Copy, Check, Zap } from 'lucide-react';
+import React, { useState, useRef } from 'react';
+import { ChevronLeft, ChevronRight, Music, Copy, Check, Zap, Loader2 } from 'lucide-react';
 import type { Track } from '../types';
 import { useWorkspace } from '../context/WorkspaceContext';
+import { generateApi } from '../services/api';
 import { AlbumCover } from './AlbumCover';
-import NewTrackModal from './NewTrackModal';
 
 interface ContextSidebarProps {
   selectedTrack: Track | null;
+  onTrackCreated?: () => void;
 }
 
-export default function ContextSidebar({ selectedTrack }: ContextSidebarProps) {
+export default function ContextSidebar({ selectedTrack, onTrackCreated }: ContextSidebarProps) {
   const [isCollapsed, setIsCollapsed] = useState(false);
   const [activeTab, setActiveTab] = useState<'info' | 'quickgen'>('info');
   const [copiedUrl, setCopiedUrl] = useState(false);
-  const [isNewTrackOpen, setIsNewTrackOpen] = useState(false);
+
+  // Quick Gen state
+  const [qPrompt, setQPrompt] = useState('');
+  const [qStyle, setQStyle] = useState('');
+  const [qGenerating, setQGenerating] = useState(false);
+  const [qProgress, setQProgress] = useState('');
+  const [qError, setQError] = useState('');
+  const pollRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const { activeWorkspace } = useWorkspace();
 
@@ -25,6 +33,75 @@ export default function ContextSidebar({ selectedTrack }: ContextSidebarProps) {
       setTimeout(() => setCopiedUrl(false), 2000);
     } catch {
       // clipboard not available
+    }
+  };
+
+  const handleQuickGen = async () => {
+    if (!activeWorkspace || !qPrompt.trim() || qGenerating) return;
+    setQGenerating(true);
+    setQError('');
+    setQProgress('Starting…');
+    try {
+      const job = await generateApi.startGeneration({
+        customMode: true,
+        songDescription: qPrompt.trim(),
+        lyrics: '',
+        style: qStyle.trim() || qPrompt.trim(),
+        title: '',
+        instrumental: true,
+        vocalLanguage: 'English',
+        bpm: 120,
+        keyScale: 'C major',
+        timeSignature: '4/4',
+        duration: 30,
+        inferenceSteps: 60,
+        guidanceScale: 15,
+        batchSize: 1,
+        randomSeed: true,
+        seed: -1,
+        thinking: false,
+        audioFormat: 'mp3',
+        inferMethod: 'ode',
+        shift: 3,
+        lmTemperature: 1.0,
+        lmCfgScale: 3.0,
+        lmTopK: 3000,
+        lmTopP: 0.98,
+        lmNegativePrompt: '',
+        workspace_id: activeWorkspace.id,
+      });
+
+      const jobId = job.jobId || job.id;
+      if (!jobId) throw new Error('No job ID returned from server');
+
+      const poll = async () => {
+        try {
+          const status = await generateApi.getStatus(jobId);
+          if (status.status === 'succeeded') {
+            setQProgress('');
+            setQGenerating(false);
+            setQPrompt('');
+            setQStyle('');
+            onTrackCreated?.();
+          } else if (status.status === 'failed') {
+            setQError(status.error || 'Generation failed');
+            setQGenerating(false);
+            setQProgress('');
+          } else {
+            setQProgress(status.stage || 'Generating…');
+            pollRef.current = setTimeout(poll, 2000);
+          }
+        } catch {
+          setQError('Lost connection to server');
+          setQGenerating(false);
+          setQProgress('');
+        }
+      };
+      poll();
+    } catch (err) {
+      setQError(err instanceof Error ? err.message : 'Failed to start generation');
+      setQGenerating(false);
+      setQProgress('');
     }
   };
 
@@ -51,8 +128,7 @@ export default function ContextSidebar({ selectedTrack }: ContextSidebarProps) {
   }
 
   return (
-    <>
-      <div className="flex-shrink-0 w-72 flex flex-col bg-zinc-50 dark:bg-suno-panel border-l border-zinc-200 dark:border-white/5 transition-colors duration-300">
+    <div className="flex-shrink-0 w-72 flex flex-col bg-zinc-50 dark:bg-suno-panel border-l border-zinc-200 dark:border-white/5 transition-colors duration-300">
         {/* Header with tabs + collapse button */}
         <div className="h-14 flex items-center justify-between px-3 border-b border-zinc-200 dark:border-white/5 flex-shrink-0">
           <div className="flex items-center gap-1 bg-zinc-200/60 dark:bg-black/30 rounded-lg p-0.5">
@@ -206,60 +282,70 @@ export default function ContextSidebar({ selectedTrack }: ContextSidebarProps) {
 
           {/* ——— Quick Gen Tab ——— */}
           {activeTab === 'quickgen' && (
-            <div className="p-4 space-y-4 pb-24">
-              <p className="text-sm text-zinc-600 dark:text-zinc-400">
-                Quickly generate a new track in{' '}
-                <span className="font-semibold text-zinc-800 dark:text-zinc-200">
-                  {activeWorkspace?.name ?? 'the active workspace'}
+            <div className="p-4 space-y-3 pb-24">
+              <p className="text-xs text-zinc-500 dark:text-zinc-400">
+                Generate in{' '}
+                <span className="font-semibold text-zinc-700 dark:text-zinc-300">
+                  {activeWorkspace?.name}
                 </span>
-                .
               </p>
 
-              {!activeWorkspace ? (
-                <div className="p-4 bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-500/30 rounded-xl text-sm text-amber-700 dark:text-amber-400">
-                  Select a workspace first to generate tracks.
-                </div>
-              ) : (
-                <button
-                  onClick={() => setIsNewTrackOpen(true)}
-                  className="w-full flex items-center justify-center gap-2 py-3 px-4 bg-gradient-to-r from-pink-500 to-purple-600 text-white text-sm font-semibold rounded-xl hover:from-pink-600 hover:to-purple-700 transition-all shadow-lg shadow-pink-500/20"
-                >
-                  <Zap size={16} />
-                  Open Generate Form
-                </button>
+              {/* Prompt */}
+              <div>
+                <label className="text-xs font-medium text-zinc-500 dark:text-zinc-400 mb-1 block">
+                  Prompt
+                </label>
+                <textarea
+                  value={qPrompt}
+                  onChange={e => setQPrompt(e.target.value)}
+                  placeholder="Describe the music…"
+                  rows={3}
+                  disabled={qGenerating}
+                  className="w-full px-3 py-2 rounded-lg bg-white dark:bg-black/20 border border-zinc-200 dark:border-white/10 text-zinc-900 dark:text-white text-sm placeholder-zinc-400 dark:placeholder-zinc-600 focus:outline-none focus:border-pink-500/50 resize-none disabled:opacity-50"
+                />
+              </div>
+
+              {/* Style */}
+              <div>
+                <label className="text-xs font-medium text-zinc-500 dark:text-zinc-400 mb-1 block">
+                  Style
+                </label>
+                <input
+                  type="text"
+                  value={qStyle}
+                  onChange={e => setQStyle(e.target.value)}
+                  placeholder="lo-fi, chill, jazz…"
+                  disabled={qGenerating}
+                  className="w-full px-3 py-2 rounded-lg bg-white dark:bg-black/20 border border-zinc-200 dark:border-white/10 text-zinc-900 dark:text-white text-sm placeholder-zinc-400 dark:placeholder-zinc-600 focus:outline-none focus:border-pink-500/50 disabled:opacity-50"
+                />
+              </div>
+
+              {/* Error */}
+              {qError && (
+                <p className="text-xs text-red-500 dark:text-red-400">{qError}</p>
               )}
 
-              {selectedTrack && (
-                <div className="pt-3 border-t border-zinc-200 dark:border-white/5 space-y-1">
-                  <p className="text-xs font-medium text-zinc-500 dark:text-zinc-400">
-                    Currently selected:
-                  </p>
-                  <p className="text-sm font-semibold text-zinc-800 dark:text-zinc-200 truncate">
-                    {selectedTrack.title}
-                  </p>
-                  {selectedTrack.style && (
-                    <p className="text-xs text-zinc-500 dark:text-zinc-400 truncate">
-                      {selectedTrack.style}
-                    </p>
-                  )}
-                </div>
+              {/* Progress */}
+              {qProgress && (
+                <p className="text-xs text-zinc-500 dark:text-zinc-400 flex items-center gap-1.5">
+                  <Loader2 size={11} className="animate-spin flex-shrink-0" />
+                  {qProgress}
+                </p>
               )}
+
+              {/* Generate button */}
+              <button
+                onClick={handleQuickGen}
+                disabled={!qPrompt.trim() || qGenerating}
+                className="w-full flex items-center justify-center gap-2 py-2.5 px-4 bg-gradient-to-r from-pink-500 to-purple-600 text-white text-sm font-semibold rounded-xl hover:from-pink-600 hover:to-purple-700 transition-all shadow-lg shadow-pink-500/20 disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {qGenerating ? <Loader2 size={15} className="animate-spin" /> : <Zap size={15} />}
+                {qGenerating ? 'Generating…' : 'Generate'}
+              </button>
             </div>
           )}
         </div>
       </div>
-
-      {activeWorkspace && (
-        <NewTrackModal
-          isOpen={isNewTrackOpen}
-          onClose={() => setIsNewTrackOpen(false)}
-          workspaceId={activeWorkspace.id}
-          onTrackCreated={() => {
-            setIsNewTrackOpen(false);
-          }}
-        />
-      )}
-    </>
   );
 }
 

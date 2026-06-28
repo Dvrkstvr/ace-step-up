@@ -1,26 +1,12 @@
 import { writeFile, mkdir, copyFile, rm, readFile } from 'fs/promises';
-import { spawn, execSync } from 'child_process';
+import { spawn } from 'child_process';
 import { existsSync } from 'fs';
 import path from 'path';
 import { handle_file } from '@gradio/client';
-
-// Get audio duration using ffprobe
-function getAudioDuration(filePath: string): number {
-  try {
-    const result = execSync(
-      `ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "${filePath}"`,
-      { encoding: 'utf-8', timeout: 10000 }
-    );
-    const duration = parseFloat(result.trim());
-    return isNaN(duration) ? 0 : Math.round(duration);
-  } catch (error) {
-    console.warn('Failed to get audio duration:', error);
-    return 0;
-  }
-}
+import { parseBuffer } from 'music-metadata';
 import { fileURLToPath } from 'url';
 import { config } from '../config/index.js';
-import { getGradioClient, resetGradioClient, isGradioAvailable } from './gradio-client.js';
+import { getGradioClient, resetGradioClient, isGradioAvailable, markGradioUnavailable } from './gradio-client.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -498,12 +484,23 @@ async function processGeneration(
       await processGenerationViaGradio(jobId, params, job);
       return;
     } catch (error) {
-      console.error(`Job ${jobId}: Gradio generation failed, trying Python spawn fallback`, error);
-      // Fall through to Python spawn
+      console.warn(`Job ${jobId}: Gradio unavailable, trying REST API`);
+      markGradioUnavailable();
     }
   }
 
-  // Fallback: Python spawn
+  // Try ACE-Step REST API (already-loaded models, much faster than Python spawn)
+  const restAvailable = await isRestApiAvailable();
+  if (restAvailable) {
+    try {
+      await processGenerationViaRestAPI(jobId, params, job);
+      return;
+    } catch (error) {
+      console.warn(`Job ${jobId}: REST API generation failed, falling back to Python spawn:`, error);
+    }
+  }
+
+  // Last resort: Python spawn (slow — loads models from scratch)
   await processGenerationViaPython(jobId, params, job);
 }
 
@@ -598,7 +595,13 @@ async function processGenerationViaGradio(
     await downloadGradioAudioFile(fileObj, destPath);
 
     if (audioUrls.length === 0) {
-      actualDuration = getAudioDuration(destPath);
+      try {
+        const buf = await readFile(destPath);
+        const meta = await parseBuffer(buf);
+        if (meta.format.duration) actualDuration = Math.round(meta.format.duration);
+      } catch {
+        // leave actualDuration = 0
+      }
     }
 
     audioUrls.push(`/audio/${filename}`);
@@ -650,6 +653,150 @@ function parseGenerationDetails(details: string | undefined): {
   } catch {
     return {};
   }
+}
+
+// ---------------------------------------------------------------------------
+// ACE-Step REST API generation (uses already-loaded models via /v1/chat/completions)
+// ---------------------------------------------------------------------------
+
+async function isRestApiAvailable(): Promise<boolean> {
+  try {
+    const res = await fetch(`${ACESTEP_API}/health`, { signal: AbortSignal.timeout(3000) });
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+
+async function processGenerationViaRestAPI(
+  jobId: string,
+  params: GenerationParams,
+  job: ActiveJob,
+): Promise<void> {
+  const caption = params.style || 'pop music';
+  const prompt = params.customMode ? caption : (params.songDescription || caption);
+  const lyrics = params.instrumental ? '[Instrumental]' : (params.lyrics || '');
+  const batchSize = Math.min(Math.max(params.batchSize ?? 1, 1), 16);
+
+  // Model is passed in the request body — no separate init call needed
+
+  console.log(`Job ${jobId}: Using REST API /v1/chat/completions`, {
+    prompt: prompt.slice(0, 50),
+    duration: params.duration,
+    batchSize,
+  });
+
+  job.stage = 'Generating music via REST API...';
+
+  const audioFormat = params.audioFormat ?? 'mp3';
+
+  // The OpenRouter-compatible chat completions endpoint accepts generation params
+  // as extra fields alongside the standard messages array
+  const requestBody: Record<string, unknown> = {
+    model: params.ditModel ?? 'acestep',
+    messages: [{ role: 'user', content: prompt }],
+    stream: false,
+    // ACE-Step-specific generation params
+    prompt,
+    lyrics,
+    audio_duration: params.duration && params.duration > 0 ? params.duration : undefined,
+    bpm: params.bpm && params.bpm > 0 ? params.bpm : undefined,
+    key_scale: params.keyScale || undefined,
+    time_signature: params.timeSignature || undefined,
+    vocal_language: params.vocalLanguage || 'en',
+    inference_steps: params.inferenceSteps ?? 8,
+    guidance_scale: params.guidanceScale ?? 7.0,
+    shift: params.shift ?? 3.0,
+    batch_size: batchSize,
+    use_random_seed: params.randomSeed !== false,
+    seed: params.randomSeed !== false ? -1 : (params.seed ?? -1),
+    thinking: params.thinking ?? false,
+    audio_format: audioFormat,
+    task_type: (params.taskType === 'audio2audio' ? 'cover' : params.taskType) || 'text2music',
+    lm_temperature: params.lmTemperature ?? 0.85,
+    lm_cfg_scale: params.lmCfgScale ?? 2.5,
+    lm_top_p: params.lmTopP ?? 0.9,
+  };
+
+  if (params.lmTopK && params.lmTopK > 0) requestBody.lm_top_k = params.lmTopK;
+  if (params.lmNegativePrompt) requestBody.lm_negative_prompt = params.lmNegativePrompt;
+  if (params.instruction) requestBody.instruction = params.instruction;
+  if (params.referenceAudioUrl) requestBody.reference_audio_path = resolveAudioPath(params.referenceAudioUrl);
+  if (params.sourceAudioUrl) requestBody.src_audio_path = resolveAudioPath(params.sourceAudioUrl);
+  if (params.audioCoverStrength !== undefined) requestBody.audio_cover_strength = params.audioCoverStrength;
+  if (params.audioCodes) requestBody.audio_code_string = params.audioCodes;
+  if (params.repaintingStart !== undefined) requestBody.repainting_start = params.repaintingStart;
+  if (params.repaintingEnd !== undefined) requestBody.repainting_end = params.repaintingEnd;
+
+  // Generation can take several minutes — no timeout
+  const res = await fetch(`${ACESTEP_API}/v1/chat/completions`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(requestBody),
+  });
+
+  if (!res.ok) {
+    const err = await res.text().catch(() => '');
+    throw new Error(`REST API generation failed: ${res.status} ${err}`);
+  }
+
+  const data = await res.json() as {
+    choices?: Array<{
+      message?: {
+        content?: string;
+        audio?: Array<{ type: string; audio_url?: { url: string } }>;
+      };
+    }>;
+  };
+
+  const choice = data.choices?.[0];
+  if (!choice) throw new Error('REST API returned no choices');
+
+  const audioItems = choice.message?.audio ?? [];
+  if (audioItems.length === 0) throw new Error('REST API returned no audio data');
+
+  await mkdir(AUDIO_DIR, { recursive: true });
+
+  const audioUrls: string[] = [];
+  let actualDuration = 0;
+
+  for (let i = 0; i < audioItems.length; i++) {
+    const item = audioItems[i];
+    const dataUrl = item.audio_url?.url ?? '';
+    if (!dataUrl.startsWith('data:')) continue;
+
+    const [, b64] = dataUrl.split(',', 2);
+    const buffer = Buffer.from(b64, 'base64');
+    const filename = `${jobId}_${i}.${audioFormat}`;
+    const destPath = path.join(AUDIO_DIR, filename);
+    await writeFile(destPath, buffer);
+
+    if (i === 0) {
+      try {
+        const meta = await parseBuffer(buffer, { mimeType: `audio/${audioFormat}` });
+        if (meta.format.duration) actualDuration = Math.round(meta.format.duration);
+      } catch {
+        // leave actualDuration = 0, fall back to metadata field
+      }
+    }
+    audioUrls.push(`/audio/${filename}`);
+  }
+
+  if (audioUrls.length === 0) throw new Error('REST API returned no decodable audio');
+
+  // Parse metadata from the text content (BPM, Key, etc.)
+  const metas = parseGenerationDetails(choice.message?.content);
+
+  job.status = 'succeeded';
+  job.result = {
+    audioUrls,
+    duration: actualDuration > 0 ? actualDuration : (metas.duration || params.duration || 0),
+    bpm: metas.bpm || params.bpm,
+    keyScale: metas.keyScale || params.keyScale,
+    timeSignature: metas.timeSignature || params.timeSignature,
+    status: 'succeeded',
+  };
+  console.log(`Job ${jobId}: Completed via REST API with ${audioUrls.length} audio file(s)`);
 }
 
 // ---------------------------------------------------------------------------
@@ -720,7 +867,7 @@ async function processGenerationViaPython(
     if (params.lmTopK !== undefined && params.lmTopK > 0) args.push('--lm-top-k', String(params.lmTopK));
     if (params.lmTopP !== undefined) args.push('--lm-top-p', String(params.lmTopP));
     if (params.lmNegativePrompt) args.push('--lm-negative-prompt', params.lmNegativePrompt);
-    if (params.ditModel) args.push('--dit-model', params.ditModel);
+    // --dit-model and --lm-model are not supported by simple_generate.py (Gradio handles model switching)
     if (params.lmModel) args.push('--lm-model', params.lmModel);
     if (params.useCotMetas === false) args.push('--no-cot-metas');
     if (params.useCotCaption === false) args.push('--no-cot-caption');
@@ -750,7 +897,13 @@ async function processGenerationViaPython(
       await copyFile(srcPath, destPath);
 
       if (audioUrls.length === 0) {
-        actualDuration = getAudioDuration(destPath);
+        try {
+          const buf = await readFile(destPath);
+          const meta = await parseBuffer(buf);
+          if (meta.format.duration) actualDuration = Math.round(meta.format.duration);
+        } catch {
+          // leave actualDuration = 0
+        }
       }
 
       audioUrls.push(`/audio/${filename}`);

@@ -3,6 +3,7 @@ import { config } from '../config/index.js';
 
 let clientInstance: Client | null = null;
 let connectionPromise: Promise<Client> | null = null;
+let unavailableUntil = 0;
 
 /**
  * Get a lazy-initialized Gradio client connected to the ACE-Step Gradio app.
@@ -40,24 +41,35 @@ export function resetGradioClient(): void {
 }
 
 /**
+ * Mark Gradio as unavailable for durationMs (default 2 min) to skip retries.
+ */
+export function markGradioUnavailable(durationMs = 120_000): void {
+  unavailableUntil = Date.now() + durationMs;
+  clientInstance = null;
+  connectionPromise = null;
+}
+
+/**
  * Check if the Gradio app is reachable.
- * Tries multiple well-known endpoints to handle version differences.
+ * Only checks Gradio-specific endpoints — avoids false positives from FastAPI/Uvicorn
+ * servers which respond to "/" but are not Gradio apps.
  */
 export async function isGradioAvailable(): Promise<boolean> {
+  if (Date.now() < unavailableUntil) return false;
+
   const baseUrl = config.acestep.apiUrl;
   const candidates = [
     `${baseUrl}/gradio_api/info`, // Gradio 5+
-    `${baseUrl}/info`,            // Gradio 4.x fallback
-    `${baseUrl}/`,                // Any HTTP response means server is up
+    `${baseUrl}/info`,            // Gradio 4.x
   ];
 
   for (const url of candidates) {
     try {
       const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), 5000);
+      const timer = setTimeout(() => controller.abort(), 3000);
       const response = await fetch(url, { signal: controller.signal });
       clearTimeout(timer);
-      if (response.ok || response.status < 500) return true;
+      if (response.ok) return true;
     } catch {
       // Try next candidate
     }

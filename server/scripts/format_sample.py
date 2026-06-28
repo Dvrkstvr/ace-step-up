@@ -66,6 +66,7 @@ def format_input(
     duration: int = 0,
     key_scale: str = "",
     time_signature: str = "",
+    language: str = "",
     temperature: float = 0.85,
     top_k: int = 0,
     top_p: float = 0.9,
@@ -85,6 +86,8 @@ def format_input(
         user_metadata['keyscale'] = key_scale.strip()
     if time_signature and time_signature.strip():
         user_metadata['timesignature'] = time_signature.strip()
+    if language and language.strip():
+        user_metadata['language'] = language.strip()
 
     user_metadata_to_pass = user_metadata if user_metadata else None
     top_k_value = None if not top_k or top_k == 0 else int(top_k)
@@ -121,6 +124,7 @@ def main():
     parser.add_argument("--duration", type=int, default=0, help="Optional duration constraint")
     parser.add_argument("--key-scale", type=str, default="", help="Optional key scale constraint")
     parser.add_argument("--time-signature", type=str, default="", help="Optional time signature constraint")
+    parser.add_argument("--language", type=str, default="", help="Optional vocal language constraint (e.g. en, zh)")
     parser.add_argument("--temperature", type=float, default=0.85, help="LLM temperature")
     parser.add_argument("--top-k", type=int, default=0, help="LLM top-k sampling")
     parser.add_argument("--top-p", type=float, default=0.9, help="LLM top-p sampling")
@@ -139,6 +143,7 @@ def main():
             duration=args.duration,
             key_scale=args.key_scale,
             time_signature=args.time_signature,
+            language=args.language,
             temperature=args.temperature,
             top_k=args.top_k,
             top_p=args.top_p,

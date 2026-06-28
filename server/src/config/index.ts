@@ -18,11 +18,11 @@ export const config = {
 
   // ACE-Step API (local)
   acestep: {
-    apiUrl: process.env.ACESTEP_API_URL || 'http://localhost:8001',
+    apiUrl: process.env.ACESTEP_API_URL || 'http://127.0.0.1:8001',
   },
 
   // Frontend URL
-  frontendUrl: process.env.FRONTEND_URL || 'http://localhost:5173',
+  frontendUrl: process.env.FRONTEND_URL || 'http://localhost:3000',
 
   // Storage (local only)
   storage: {

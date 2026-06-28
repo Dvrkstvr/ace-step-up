@@ -1,8 +1,9 @@
-import React, { useState } from 'react';
-import { Plus, Lock, Trash2, Volume2 } from 'lucide-react';
+import React, { useRef, useState, useEffect } from 'react';
+import { Plus, Lock, Trash2, Volume2, BookOpen, Wand2, Upload, Layers } from 'lucide-react';
 import { useStudio } from '../../context/StudioContext';
 import { StudioLayer } from '../../types';
-import StudioAddLayerModal from './StudioAddLayerModal';
+import StudioLibraryModal from './StudioLibraryModal';
+import StudioGeneratedContentModal from './StudioGeneratedContentModal';
 
 const SOURCE_BADGE_COLORS: Record<string, string> = {
   master:    'bg-blue-100 dark:bg-blue-900/40 text-blue-700 dark:text-blue-300',
@@ -12,13 +13,35 @@ const SOURCE_BADGE_COLORS: Record<string, string> = {
   repaint:   'bg-orange-100 dark:bg-orange-900/40 text-orange-700 dark:text-orange-300',
 };
 
+type ActiveModal = 'library' | 'generated' | null;
+
 const StudioLayerPanel: React.FC = () => {
-  const { layers, updateLayer, deleteLayer } = useStudio();
-  const [showAddModal, setShowAddModal] = useState(false);
+  const { layers, updateLayer, deleteLayer, addLayer } = useStudio();
+  const [showPopover, setShowPopover] = useState(false);
+  const [activeModal, setActiveModal] = useState<ActiveModal>(null);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editingName, setEditingName] = useState('');
+  const popoverRef = useRef<HTMLDivElement>(null);
+  const addButtonRef = useRef<HTMLButtonElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   const sorted = [...layers].sort((a, b) => a.sort_order - b.sort_order);
+  const nextOrder = layers.length;
+
+  // Close popover on outside click
+  useEffect(() => {
+    if (!showPopover) return;
+    const handler = (e: MouseEvent) => {
+      if (
+        popoverRef.current && !popoverRef.current.contains(e.target as Node) &&
+        addButtonRef.current && !addButtonRef.current.contains(e.target as Node)
+      ) {
+        setShowPopover(false);
+      }
+    };
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, [showPopover]);
 
   const startEdit = (layer: StudioLayer) => {
     setEditingId(layer.id);
@@ -49,19 +72,121 @@ const StudioLayerPanel: React.FC = () => {
     await deleteLayer(layer.id).catch(console.error);
   };
 
+  const handleUploadFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    e.target.value = '';
+    try {
+      const audioUrl = URL.createObjectURL(file);
+      await addLayer({
+        source_type: 'upload',
+        name: file.name.replace(/\.[^.]+$/, ''),
+        audio_url: audioUrl,
+        volume: 1.0,
+        is_muted: false,
+        is_solo: false,
+        is_locked: false,
+        sort_order: nextOrder,
+      });
+    } catch (err) {
+      console.error('Failed to add uploaded layer:', err);
+    }
+  };
+
+  const handleEmptyLayer = async () => {
+    setShowPopover(false);
+    try {
+      await addLayer({
+        source_type: 'upload',
+        name: `Layer ${nextOrder + 1}`,
+        audio_url: '',
+        volume: 1.0,
+        is_muted: false,
+        is_solo: false,
+        is_locked: false,
+        sort_order: nextOrder,
+      });
+    } catch (err) {
+      console.error('Failed to add empty layer:', err);
+    }
+  };
+
+  const menuItems = [
+    {
+      id: 'library',
+      icon: <BookOpen size={16} className="text-pink-500 flex-shrink-0" />,
+      label: 'From Library',
+      description: 'Browse your tracks and stems',
+      action: () => { setShowPopover(false); setActiveModal('library'); },
+    },
+    {
+      id: 'generated',
+      icon: <Wand2 size={16} className="text-purple-500 flex-shrink-0" />,
+      label: 'Generated Content',
+      description: 'Generate audio on this layer',
+      action: () => { setShowPopover(false); setActiveModal('generated'); },
+    },
+    {
+      id: 'upload',
+      icon: <Upload size={16} className="text-pink-600 flex-shrink-0" />,
+      label: 'Upload Audio',
+      description: 'Add a local audio file',
+      action: () => { setShowPopover(false); fileInputRef.current?.click(); },
+    },
+    {
+      id: 'empty',
+      icon: <Layers size={16} className="text-zinc-400 flex-shrink-0" />,
+      label: 'Empty Layer',
+      description: 'Create a blank placeholder',
+      action: handleEmptyLayer,
+    },
+  ];
+
   return (
     <div className="flex flex-col h-full bg-zinc-50 dark:bg-zinc-900 border-r border-zinc-200 dark:border-white/10">
       {/* Header */}
-      <div className="flex items-center justify-between px-3 py-2 border-b border-zinc-200 dark:border-white/10 flex-shrink-0">
+      <div className="flex items-center justify-between px-3 py-2 border-b border-zinc-200 dark:border-white/10 flex-shrink-0 relative">
         <span className="text-xs font-semibold text-zinc-500 dark:text-zinc-400 uppercase tracking-wide">Layers</span>
         <button
-          onClick={() => setShowAddModal(true)}
+          ref={addButtonRef}
+          onClick={() => setShowPopover(v => !v)}
           className="flex items-center gap-1 px-2 py-1 rounded text-xs font-medium bg-zinc-900 dark:bg-white text-white dark:text-black hover:bg-zinc-700 dark:hover:bg-zinc-100 transition-colors"
         >
           <Plus size={12} />
           Add
         </button>
+
+        {/* Popover */}
+        {showPopover && (
+          <div
+            ref={popoverRef}
+            className="absolute top-full right-0 mt-1 z-50 w-56 bg-white dark:bg-zinc-900 rounded-xl shadow-2xl border border-zinc-200 dark:border-white/10 py-1 overflow-hidden"
+          >
+            {menuItems.map(item => (
+              <button
+                key={item.id}
+                onClick={item.action}
+                className="w-full flex items-start gap-2.5 px-3 py-2.5 hover:bg-zinc-50 dark:hover:bg-white/5 transition-colors text-left"
+              >
+                <span className="mt-0.5">{item.icon}</span>
+                <div>
+                  <div className="text-xs font-medium text-zinc-900 dark:text-zinc-100">{item.label}</div>
+                  <div className="text-[11px] text-zinc-500 dark:text-zinc-400 mt-0.5">{item.description}</div>
+                </div>
+              </button>
+            ))}
+          </div>
+        )}
       </div>
+
+      {/* Hidden file input for upload */}
+      <input
+        ref={fileInputRef}
+        type="file"
+        accept="audio/*"
+        className="hidden"
+        onChange={handleUploadFile}
+      />
 
       {/* Layer list */}
       <div className="flex-1 overflow-y-auto">
@@ -157,7 +282,12 @@ const StudioLayerPanel: React.FC = () => {
         ))}
       </div>
 
-      {showAddModal && <StudioAddLayerModal onClose={() => setShowAddModal(false)} />}
+      {activeModal === 'library' && (
+        <StudioLibraryModal onClose={() => setActiveModal(null)} />
+      )}
+      {activeModal === 'generated' && (
+        <StudioGeneratedContentModal onClose={() => setActiveModal(null)} />
+      )}
     </div>
   );
 };

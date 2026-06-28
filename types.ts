@@ -83,6 +83,12 @@ export interface StudioLayer {
   is_solo: boolean;
   is_locked: boolean;
   sort_order: number;
+  // Clip positioning on the timeline (seconds from t=0)
+  start_offset: number;
+  // Trim points within the source audio (seconds); clip_end=null means play to end
+  clip_start: number;
+  clip_end: number | null;
+  // Repaint region (which portion of this layer to repaint)
   region_start?: number;
   region_end?: number;
   generation_params?: Partial<GenerationParams>;

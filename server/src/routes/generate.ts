@@ -15,7 +15,6 @@ import {
   checkSpaceHealth,
   cleanupJob,
   getJobRawResponse,
-  downloadAudioToBuffer,
   resolvePythonPath,
 } from '../services/acestep.js';
 import { getStorageProvider } from '../services/storage/factory.js';
@@ -419,93 +418,23 @@ router.get('/status/:jobId', authMiddleware, async (req: AuthenticatedRequest, r
           const updateResult = await pool.query(updateQuery, updateParams);
           const wasUpdated = updateResult.rowCount > 0;
 
-          // If succeeded AND we were the first to update (optimistic lock), create song records
+          // If succeeded AND we were the first to update (optimistic lock), create track record
           if (aceStatus.status === 'succeeded' && aceStatus.result && wasUpdated) {
             const params = typeof job.params === 'string' ? JSON.parse(job.params) : job.params;
             const audioUrls = aceStatus.result.audioUrls.filter((url: string) => {
               const lower = url.toLowerCase();
               return lower.endsWith('.mp3') || lower.endsWith('.flac') || lower.endsWith('.wav');
             });
-            const localPaths: string[] = [];
-            const storage = getStorageProvider();
 
-            for (let i = 0; i < audioUrls.length; i++) {
-              const audioUrl = audioUrls[i];
-              const variationSuffix = audioUrls.length > 1 ? ` (v${i + 1})` : '';
-              const songTitle = autoTitle(params) + variationSuffix;
-
-              const songId = generateUUID();
-
-              try {
-                const { buffer } = await downloadAudioToBuffer(audioUrl);
-                const ext = audioUrl.includes('.flac') ? '.flac' : '.mp3';
-                const storageKey = `${req.user!.id}/${songId}${ext}`;
-                await storage.upload(storageKey, buffer, `audio/${ext.slice(1)}`);
-                const storedPath = storage.getPublicUrl(storageKey);
-
-                await pool.query(
-                  `INSERT INTO songs (id, user_id, title, lyrics, style, caption, audio_url,
-                                      duration, bpm, key_scale, time_signature, tags, is_public, generation_params,
-                                      created_at, updated_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, datetime('now'), datetime('now'))`,
-                  [
-                    songId,
-                    req.user!.id,
-                    songTitle,
-                    params.instrumental ? '[Instrumental]' : params.lyrics,
-                    params.style,
-                    params.style,
-                    storedPath,
-                    aceStatus.result.duration && aceStatus.result.duration > 0 ? aceStatus.result.duration : (params.duration && params.duration > 0 ? params.duration : 0),
-                    aceStatus.result.bpm || params.bpm,
-                    aceStatus.result.keyScale || params.keyScale,
-                    aceStatus.result.timeSignature || params.timeSignature,
-                    JSON.stringify([]),
-                    JSON.stringify(params),
-                  ]
-                );
-
-                localPaths.push(storedPath);
-              } catch (downloadError) {
-                console.error(`Failed to download audio ${i + 1}:`, downloadError);
-                // Still create song record with remote URL
-                await pool.query(
-                  `INSERT INTO songs (id, user_id, title, lyrics, style, caption, audio_url,
-                                      duration, bpm, key_scale, time_signature, tags, is_public, generation_params,
-                                      created_at, updated_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, datetime('now'), datetime('now'))`,
-                  [
-                    songId,
-                    req.user!.id,
-                    songTitle,
-                    params.instrumental ? '[Instrumental]' : params.lyrics,
-                    params.style,
-                    params.style,
-                    audioUrl,
-                    aceStatus.result.duration && aceStatus.result.duration > 0 ? aceStatus.result.duration : (params.duration && params.duration > 0 ? params.duration : 0),
-                    aceStatus.result.bpm || params.bpm,
-                    aceStatus.result.keyScale || params.keyScale,
-                    aceStatus.result.timeSignature || params.timeSignature,
-                    JSON.stringify([]),
-                    JSON.stringify(params),
-                  ]
-                );
-                localPaths.push(audioUrl);
-              }
-            }
-
-            aceStatus.result.audioUrls = localPaths;
-
-            // Create a tracks row for workspace/project tracking
             try {
-              const primaryAudioUrl = localPaths[0] || audioUrls[0];
+              const primaryAudioUrl = audioUrls[0];
               if (primaryAudioUrl) {
+                const trackTitle = autoTitle(params);
                 const prompt = params.songDescription || params.style || '';
-                const trackTitle = prompt.slice(0, 60).trim() || 'Generated Track';
                 const trackId = generateUUID();
                 await pool.query(
-                  `INSERT INTO tracks (id, title, audio_url, workspace_id, project_id, parent_track_id, task_type, prompt, lyrics, style, duration, bpm, seed, parameters, tags, created_at, updated_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))`,
+                  `INSERT INTO tracks (id, title, audio_url, workspace_id, project_id, parent_track_id, task_type, prompt, lyrics, style, duration, bpm, key_scale, time_signature, seed, parameters, tags, created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))`,
                   [
                     trackId,
                     trackTitle,
@@ -517,8 +446,10 @@ router.get('/status/:jobId', authMiddleware, async (req: AuthenticatedRequest, r
                     prompt || null,
                     params.lyrics || null,
                     params.style || null,
-                    params.duration || null,
-                    params.bpm || null,
+                    aceStatus.result.duration || params.duration || null,
+                    aceStatus.result.bpm || params.bpm || null,
+                    params.keyScale || null,
+                    params.timeSignature || null,
                     params.seed || null,
                     JSON.stringify(params),
                     '[]',
@@ -818,7 +749,7 @@ router.get('/debug/:taskId', authMiddleware, async (req: AuthenticatedRequest, r
 // Format endpoint - uses LLM to enhance style/lyrics
 router.post('/format', authMiddleware, async (req: AuthenticatedRequest, res: Response) => {
   try {
-    const { caption, lyrics, bpm, duration, keyScale, timeSignature, temperature, topK, topP, lmModel, lmBackend } = req.body;
+    const { caption, lyrics, bpm, duration, keyScale, timeSignature, vocalLanguage, temperature, topK, topP, lmModel, lmBackend } = req.body;
 
     if (!caption) {
       res.status(400).json({ error: 'Caption/style is required' });
@@ -833,6 +764,7 @@ router.post('/format', authMiddleware, async (req: AuthenticatedRequest, res: Re
     if (duration && duration > 0) paramObj.duration = duration;
     if (keyScale) paramObj.key = keyScale;
     if (timeSignature) paramObj.time_signature = timeSignature;
+    if (vocalLanguage) paramObj.language = vocalLanguage;
 
     // Primary path: call ACE-Step's /format_input REST endpoint (avoids Python spawn ENOENT on Windows)
     try {
@@ -895,6 +827,7 @@ router.post('/format', authMiddleware, async (req: AuthenticatedRequest, res: Re
     if (duration && duration > 0) args.push('--duration', String(duration));
     if (keyScale) args.push('--key-scale', keyScale);
     if (timeSignature) args.push('--time-signature', timeSignature);
+    if (vocalLanguage) args.push('--language', vocalLanguage);
     if (temperature !== undefined) args.push('--temperature', String(temperature));
     if (topK && topK > 0) args.push('--top-k', String(topK));
     if (topP !== undefined) args.push('--top-p', String(topP));
@@ -943,13 +876,84 @@ router.post('/format', authMiddleware, async (req: AuthenticatedRequest, res: Re
     });
 
     if (result.success && result.data) {
-      res.json(result.data);
+      const d = result.data;
+      res.json({
+        caption: d.caption,
+        lyrics: d.lyrics,
+        bpm: d.bpm,
+        duration: d.duration,
+        key_scale: d.key_scale,
+        time_signature: d.time_signature,
+        vocal_language: d.language ?? d.vocal_language,
+        status_message: d.status_message,
+      });
     } else {
       console.error('[Format] Python error:', result.error);
       res.status(500).json({ success: false, error: result.error });
     }
   } catch (error) {
     console.error('[Format] Route error:', error);
+    res.status(500).json({ error: (error as Error).message });
+  }
+});
+
+router.post('/generate-title', authMiddleware, async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const { caption, lyrics } = req.body;
+    if (!caption && !lyrics) {
+      res.status(400).json({ error: 'caption or lyrics required' });
+      return;
+    }
+
+    const ACESTEP_API_URL = config.acestep.apiUrl;
+
+    const systemPrompt = 'You are a music title generator. Reply with ONLY the track title — no quotes, no explanation, no punctuation at the end. 2-6 words maximum.';
+    const userContent = [
+      caption ? `Caption: ${caption}` : '',
+      lyrics ? `Lyrics excerpt:\n${lyrics.slice(0, 400)}` : '',
+    ].filter(Boolean).join('\n\n');
+
+    const apiRes = await fetch(`${ACESTEP_API_URL}/v1/chat/completions`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: 'acestep',
+        messages: [
+          { role: 'system', content: systemPrompt },
+          { role: 'user', content: userContent },
+        ],
+        stream: false,
+        // Tell ACE-Step this is a text-only request — skip audio generation
+        analysis_only: true,
+      }),
+      signal: AbortSignal.timeout(30_000),
+    });
+
+    if (!apiRes.ok) {
+      res.status(500).json({ error: `ACE-Step API returned ${apiRes.status}` });
+      return;
+    }
+
+    const data = await apiRes.json() as any;
+    const content: string = data?.choices?.[0]?.message?.content ?? '';
+
+    // Extract just the title — strip markdown headers, "Title:" prefixes, etc.
+    const title = content
+      .replace(/^#+\s*/gm, '')
+      .replace(/^\*+|\*+$/g, '')
+      .replace(/^title[:\s]*/i, '')
+      .split('\n')[0]
+      .trim()
+      .slice(0, 80);
+
+    if (!title) {
+      res.status(500).json({ error: 'No title returned' });
+      return;
+    }
+
+    res.json({ title });
+  } catch (error) {
+    console.error('[GenerateTitle] Error:', error);
     res.status(500).json({ error: (error as Error).message });
   }
 });

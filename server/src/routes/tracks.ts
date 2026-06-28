@@ -1,5 +1,36 @@
 import { Router, Request, Response } from 'express';
+import path from 'path';
+import { fileURLToPath } from 'url';
 import { pool } from '../db/pool.js';
+import { splitWithDemucs, DEMUCS_MODEL_STEMS, type DemucsModel } from '../services/demucs.js';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+const AUDIO_DIR = path.join(__dirname, '../../public/audio');
+
+function resolveAudioPath(audioUrl: string): string {
+  if (audioUrl.startsWith('/audio/')) {
+    return path.join(AUDIO_DIR, audioUrl.replace('/audio/', ''));
+  }
+  return audioUrl;
+}
+
+interface StemJob {
+  status: 'running' | 'succeeded' | 'failed';
+  stems?: unknown[];
+  error?: string;
+  startTime: number;
+}
+
+const stemJobs = new Map<string, StemJob>();
+
+// Cleanup stem jobs older than 1 hour
+setInterval(() => {
+  const cutoff = Date.now() - 3_600_000;
+  for (const [id, job] of stemJobs) {
+    if (job.startTime < cutoff) stemJobs.delete(id);
+  }
+}, 600_000);
 
 const router = Router();
 
@@ -41,11 +72,12 @@ router.get('/', async (req: Request, res: Response) => {
     const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
 
     const result = await pool.query(
-      `SELECT * FROM tracks ${where} ORDER BY created_at DESC`,
+      `SELECT t.*, (SELECT COUNT(*) FROM stems WHERE track_id = t.id) as stem_count
+       FROM tracks t ${where} ORDER BY t.created_at DESC`,
       params.length > 0 ? params : undefined
     );
 
-    res.json(result.rows.map(parseTrack));
+    res.json(result.rows.map(r => ({ ...parseTrack(r), has_stems: r.stem_count > 0 })));
   } catch (error) {
     console.error('List tracks error:', error);
     res.status(500).json({ error: 'Internal server error' });
@@ -207,7 +239,7 @@ router.delete('/:id', async (req: Request, res: Response) => {
   }
 });
 
-// POST /api/tracks/:id/iterate — create a variation by copying the source track
+// POST /api/tracks/:id/iterate — return source track params for re-generation
 router.post('/:id/iterate', async (req: Request, res: Response) => {
   try {
     const sourceResult = await pool.query(
@@ -220,39 +252,27 @@ router.post('/:id/iterate', async (req: Request, res: Response) => {
       return;
     }
 
-    const source = sourceResult.rows[0];
-    const { title, prompt, style } = req.body;
-
-    const result = await pool.query(
-      `INSERT INTO tracks (
-        workspace_id, project_id, parent_track_id, title,
-        audio_url, task_type, prompt, lyrics, style,
-        duration, bpm, key_scale, time_signature,
-        parameters, seed, cover_url, tags
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      RETURNING *`,
-      [
-        source.workspace_id,
-        source.project_id,
-        req.params.id,           // parent_track_id = source track id
-        title ?? source.title,
-        source.audio_url,
-        source.task_type,
-        prompt ?? source.prompt,
-        source.lyrics,
-        style ?? source.style,
-        source.duration,
-        source.bpm,
-        source.key_scale,
-        source.time_signature,
-        source.parameters,        // already a JSON string from DB; pool leaves strings as-is
-        source.seed,
-        source.cover_url,
-        source.tags,              // already a JSON string from DB
-      ]
-    );
-
-    res.status(201).json(parseTrack(result.rows[0]));
+    const source = parseTrack(sourceResult.rows[0]);
+    // Return the source params so the frontend can pre-fill a new generation.
+    // Use a random seed so the variation sounds different.
+    const params = source.parameters ?? {};
+    res.json({
+      sourceTrackId: source.id,
+      workspaceId: source.workspace_id,
+      projectId: source.project_id,
+      caption: source.style ?? params.caption ?? '',
+      lyrics: source.lyrics ?? params.lyrics ?? '',
+      duration: source.duration ?? params.duration,
+      bpm: source.bpm ?? params.bpm,
+      keyScale: source.key_scale ?? params.keyScale,
+      timeSignature: source.time_signature ?? params.timeSignature,
+      taskType: source.task_type ?? params.taskType ?? 'text2music',
+      ditModel: params.ditModel,
+      inferenceSteps: params.inferenceSteps,
+      guidanceScale: params.guidanceScale,
+      shift: params.shift,
+      vocalLanguage: params.vocalLanguage,
+    });
   } catch (error) {
     console.error('Iterate track error:', error);
     res.status(500).json({ error: 'Internal server error' });
@@ -264,9 +284,83 @@ router.post('/:id/extract-prompt', (_req: Request, res: Response) => {
   res.status(501).json({ error: 'Extract prompt not yet implemented' });
 });
 
-// POST /api/tracks/:id/split-stems — stub (not yet implemented)
-router.post('/:id/split-stems', (_req: Request, res: Response) => {
-  res.status(501).json({ error: 'Stem splitting not yet implemented' });
+// POST /api/tracks/:id/split-stems — start async Demucs stem splitting job
+router.post('/:id/split-stems', async (req: Request, res: Response) => {
+  try {
+    const trackResult = await pool.query(
+      `SELECT id, audio_url FROM tracks WHERE id = ?`,
+      [req.params.id]
+    );
+    if (trackResult.rows.length === 0) {
+      res.status(404).json({ error: 'Track not found' });
+      return;
+    }
+
+    const track = trackResult.rows[0];
+    if (!track.audio_url) {
+      res.status(400).json({ error: 'Track has no audio file' });
+      return;
+    }
+
+    const model: DemucsModel = (req.body.model as DemucsModel) || 'htdemucs';
+    const selectedStems: string[] | undefined = req.body.stems;
+
+    if (!DEMUCS_MODEL_STEMS[model]) {
+      res.status(400).json({ error: `Unknown model: ${model}` });
+      return;
+    }
+
+    const jobId = `stems_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+    stemJobs.set(jobId, { status: 'running', startTime: Date.now() });
+
+    res.json({ jobId });
+
+    // Run Demucs asynchronously
+    (async () => {
+      const job = stemJobs.get(jobId)!;
+      try {
+        const audioPath = resolveAudioPath(track.audio_url);
+        const stemResults = await splitWithDemucs(audioPath, track.id, model, selectedStems);
+
+        // Delete any existing stems for this track before inserting new ones
+        await pool.query(`DELETE FROM stems WHERE track_id = ?`, [track.id]);
+
+        for (const stem of stemResults) {
+          await pool.query(
+            `INSERT INTO stems (track_id, instrument_class, audio_url) VALUES (?, ?, ?)`,
+            [track.id, stem.instrument_class, stem.audio_url]
+          );
+        }
+
+        const saved = await pool.query(
+          `SELECT * FROM stems WHERE track_id = ? ORDER BY created_at ASC`,
+          [track.id]
+        );
+
+        job.status = 'succeeded';
+        job.stems = saved.rows;
+        console.log(`[Stems] Job ${jobId}: split ${saved.rows.length} stems for track ${track.id}`);
+      } catch (err) {
+        job.status = 'failed';
+        job.error = err instanceof Error ? err.message : 'Stem splitting failed';
+        console.error(`[Stems] Job ${jobId} failed:`, err);
+      }
+    })();
+  } catch (error) {
+    console.error('Split stems error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// GET /api/tracks/:id/split-stems/:jobId — poll stem splitting job status
+router.get('/:id/split-stems/:jobId', (req: Request, res: Response) => {
+  const job = stemJobs.get(req.params.jobId);
+  if (!job) {
+    res.status(404).json({ error: 'Job not found' });
+    return;
+  }
+  const elapsed = Math.round((Date.now() - job.startTime) / 1000);
+  res.json({ status: job.status, stems: job.stems, error: job.error, elapsed });
 });
 
 export default router;

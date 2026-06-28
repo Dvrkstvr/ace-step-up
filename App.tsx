@@ -15,8 +15,10 @@ import { Track, TopView } from './types';
 
 function AppContent() {
   const { isOpen: studioOpen } = useStudio();
+  const { breadcrumb } = useWorkspace();
   const [topView, setTopView] = useState<TopView>('generation');
   const [selectedTrack, setSelectedTrack] = useState<Track | null>(null);
+  const [refreshKey, setRefreshKey] = useState(0);
 
   return (
     <div className="app-container">
@@ -26,8 +28,13 @@ function AppContent() {
           <TrainingPanel />
         ) : (
           <div className="dashboard-layout">
-            <Dashboard onSelectTrack={setSelectedTrack} />
-            <ContextSidebar selectedTrack={selectedTrack} />
+            <Dashboard onSelectTrack={setSelectedTrack} refreshKey={refreshKey} />
+            {breadcrumb.level !== 'root' && (
+              <ContextSidebar
+                selectedTrack={selectedTrack}
+                onTrackCreated={() => setRefreshKey(k => k + 1)}
+              />
+            )}
           </div>
         )}
       </main>

@@ -5,13 +5,16 @@ import {
 } from 'lucide-react';
 import { useStudio } from '../context/StudioContext';
 import { projectsApi, tracksApi } from '../services/api';
-import { Track } from '../types';
+import { Stem, Track } from '../types';
 import { ConfirmDialog } from './ConfirmDialog';
+import SplitStemsModal from './SplitStemsModal';
 
 export interface TrackContextMenuProps {
   track: Track;
   onClose: () => void;
   onUpdate: () => void;
+  onCreateVariation?: (params: any) => void;
+  onStemsCreated?: (stems: Stem[]) => void;
   position?: { x: number; y: number };
 }
 
@@ -19,6 +22,8 @@ const TrackContextMenu: React.FC<TrackContextMenuProps> = ({
   track,
   onClose,
   onUpdate,
+  onCreateVariation,
+  onStemsCreated,
   position = { x: 0, y: 0 },
 }) => {
   const { openStudio } = useStudio();
@@ -28,6 +33,7 @@ const TrackContextMenu: React.FC<TrackContextMenuProps> = ({
   const [showRename, setShowRename] = useState(false);
   const [renameValue, setRenameValue] = useState(track.title);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
+  const [showSplitStems, setShowSplitStems] = useState(false);
   const [loading, setLoading] = useState<string | null>(null);
   const [inlineMsg, setInlineMsg] = useState('');
 
@@ -54,6 +60,7 @@ const TrackContextMenu: React.FC<TrackContextMenuProps> = ({
       if (e.key === 'Escape') onClose();
     };
     const onDown = (e: MouseEvent) => {
+      if (showSplitStems) return;
       if (menuRef.current && !menuRef.current.contains(e.target as Node)) {
         onClose();
       }
@@ -64,7 +71,7 @@ const TrackContextMenu: React.FC<TrackContextMenuProps> = ({
       document.removeEventListener('keydown', onKey);
       document.removeEventListener('mousedown', onDown);
     };
-  }, [onClose]);
+  }, [onClose, showSplitStems]);
 
   // ── Actions ─────────────────────────────────────────────────────────────
 
@@ -103,9 +110,13 @@ const TrackContextMenu: React.FC<TrackContextMenuProps> = ({
   const handleCreateVariation = async () => {
     setLoading('variation');
     try {
-      await tracksApi.iterate(track.id);
-      onUpdate();
+      const params = await tracksApi.iterate(track.id);
       onClose();
+      if (onCreateVariation) {
+        onCreateVariation(params);
+      } else {
+        onUpdate();
+      }
     } catch (err) {
       console.error('Failed to create variation:', err);
     } finally {
@@ -144,7 +155,7 @@ const TrackContextMenu: React.FC<TrackContextMenuProps> = ({
 
   const menuContent = (
     <>
-      <div
+      {!showSplitStems && <div
         ref={menuRef}
         style={{ ...menuStyle, position: 'fixed', zIndex: 9999 }}
         className="w-52 bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-white/10 rounded-xl shadow-2xl overflow-hidden transition-opacity duration-75"
@@ -171,9 +182,21 @@ const TrackContextMenu: React.FC<TrackContextMenuProps> = ({
           <Divider />
 
           {/* Split to Stems */}
-          <MenuItem icon={<Scissors size={14} />} onClick={() => showComingSoon('Split to Stems')}>
-            Split to Stems <ComingSoonBadge />
-          </MenuItem>
+          {!track.has_stems ? (
+            <MenuItem
+              icon={<Scissors size={14} />}
+              onClick={() => { setShowSplitStems(true); }}
+            >
+              Split to Stems
+            </MenuItem>
+          ) : (
+            <MenuItem
+              icon={<Scissors size={14} />}
+              onClick={() => { setShowSplitStems(true); }}
+            >
+              Re-split Stems
+            </MenuItem>
+          )}
 
           {/* Promote to Song — only for tracks not already in a project */}
           {!track.project_id && (
@@ -255,7 +278,7 @@ const TrackContextMenu: React.FC<TrackContextMenuProps> = ({
             Delete
           </MenuItem>
         </div>
-      </div>
+      </div>}
 
       {showDeleteConfirm && (
         <ConfirmDialog
@@ -270,7 +293,23 @@ const TrackContextMenu: React.FC<TrackContextMenuProps> = ({
     </>
   );
 
-  return createPortal(menuContent, document.body);
+  return (
+    <>
+      {createPortal(menuContent, document.body)}
+      {showSplitStems && (
+        <SplitStemsModal
+          track={track}
+          onClose={() => setShowSplitStems(false)}
+          onSuccess={(stems) => {
+            setShowSplitStems(false);
+            onClose();
+            onStemsCreated?.(stems);
+            onUpdate();
+          }}
+        />
+      )}
+    </>
+  );
 };
 
 // ── Helper sub-components ─────────────────────────────────────────────────────

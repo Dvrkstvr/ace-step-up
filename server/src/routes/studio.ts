@@ -182,6 +182,9 @@ router.post('/sessions/:sid/layers', async (req: Request, res: Response) => {
       audio_url,
       stem_id,
       parent_layer_id,
+      start_offset,
+      clip_start,
+      clip_end,
       region_start,
       region_end,
       volume,
@@ -219,8 +222,10 @@ router.post('/sessions/:sid/layers', async (req: Request, res: Response) => {
     const result = await pool.query(
       `INSERT INTO studio_layers
          (session_id, stem_id, parent_layer_id, source_type, name, audio_url, original_audio_url,
-          volume, is_muted, is_solo, is_locked, sort_order, region_start, region_end, generation_params)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          volume, is_muted, is_solo, is_locked, sort_order,
+          start_offset, clip_start, clip_end,
+          region_start, region_end, generation_params)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        RETURNING *`,
       [
         sid,
@@ -229,12 +234,15 @@ router.post('/sessions/:sid/layers', async (req: Request, res: Response) => {
         source_type,
         name,
         audio_url,
-        audio_url, // original_audio_url mirrors audio_url on creation
+        audio_url,
         volume !== undefined ? volume : 1.0,
         is_muted ? 1 : 0,
         is_solo ? 1 : 0,
         is_locked ? 1 : 0,
         nextOrder,
+        start_offset ?? 0,
+        clip_start ?? 0,
+        clip_end ?? null,
         region_start ?? null,
         region_end ?? null,
         generation_params != null ? JSON.stringify(generation_params) : null,
@@ -256,16 +264,19 @@ router.post('/sessions/:sid/layers', async (req: Request, res: Response) => {
 router.patch('/layers/:id', async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
-    const { volume, is_muted, is_solo, sort_order, name } = req.body;
+    const { volume, is_muted, is_solo, sort_order, name, start_offset, clip_start, clip_end } = req.body;
 
     const updates: string[] = [];
     const values: unknown[] = [];
 
-    if (name !== undefined)       { updates.push('name = ?');       values.push(name); }
-    if (volume !== undefined)     { updates.push('volume = ?');     values.push(volume); }
-    if (is_muted !== undefined)   { updates.push('is_muted = ?');   values.push(is_muted ? 1 : 0); }
-    if (is_solo !== undefined)    { updates.push('is_solo = ?');    values.push(is_solo ? 1 : 0); }
-    if (sort_order !== undefined) { updates.push('sort_order = ?'); values.push(sort_order); }
+    if (name !== undefined)         { updates.push('name = ?');         values.push(name); }
+    if (volume !== undefined)       { updates.push('volume = ?');       values.push(volume); }
+    if (is_muted !== undefined)     { updates.push('is_muted = ?');     values.push(is_muted ? 1 : 0); }
+    if (is_solo !== undefined)      { updates.push('is_solo = ?');      values.push(is_solo ? 1 : 0); }
+    if (sort_order !== undefined)   { updates.push('sort_order = ?');   values.push(sort_order); }
+    if (start_offset !== undefined) { updates.push('start_offset = ?'); values.push(start_offset); }
+    if (clip_start !== undefined)   { updates.push('clip_start = ?');   values.push(clip_start); }
+    if (clip_end !== undefined)     { updates.push('clip_end = ?');     values.push(clip_end); }
 
     if (updates.length === 0) {
       res.status(400).json({ error: 'No updatable fields provided' });

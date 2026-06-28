@@ -90,6 +90,9 @@ CREATE TABLE IF NOT EXISTS studio_layers (
   is_solo INTEGER DEFAULT 0,
   is_locked INTEGER DEFAULT 0,
   sort_order INTEGER DEFAULT 0,
+  start_offset REAL DEFAULT 0,
+  clip_start REAL DEFAULT 0,
+  clip_end REAL,
   region_start REAL,
   region_end REAL,
   generation_params TEXT,
@@ -140,21 +143,36 @@ INSERT OR IGNORE INTO workspaces (id, name, type)
 VALUES ('default', 'My Music', 'General');
 `;
 
+// Columns added in later migrations — safe to run repeatedly
+const columnMigrations: Array<{ table: string; column: string; definition: string }> = [
+  { table: 'studio_layers', column: 'start_offset', definition: 'REAL DEFAULT 0' },
+  { table: 'studio_layers', column: 'clip_start',   definition: 'REAL DEFAULT 0' },
+  { table: 'studio_layers', column: 'clip_end',     definition: 'REAL' },
+];
+
 function migrate(): void {
   console.log('Running SQLite database migrations...');
 
   try {
-    // Execute the entire migration script at once
     db.exec(migrations);
     console.log('Migrations completed successfully!');
   } catch (error) {
-    // Check if it's just "already exists" errors
     const errorMsg = String(error);
     if (errorMsg.includes('already exists')) {
       console.log('Tables already exist, migrations completed!');
     } else {
       console.error('Migration failed:', error);
       throw error;
+    }
+  }
+
+  // Add new columns to existing tables (idempotent — ignore "duplicate column" errors)
+  for (const { table, column, definition } of columnMigrations) {
+    try {
+      db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+      console.log(`Added column ${table}.${column}`);
+    } catch {
+      // Column already exists — expected on subsequent runs
     }
   }
 }

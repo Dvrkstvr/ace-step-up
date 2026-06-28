@@ -52,6 +52,9 @@ async function api<T>(endpoint: string, options: ApiOptions = {}): Promise<T> {
     throw new Error(`${response.status}: ${errorMessage}`);
   }
 
+  if (response.status === 204 || response.headers.get('content-length') === '0') {
+    return undefined as T;
+  }
   return response.json();
 }
 
@@ -78,7 +81,7 @@ export interface GenerationJob {
 }
 
 export const generateApi = {
-  startGeneration: (params: GenerationParams): Promise<GenerationJob> =>
+  startGeneration: (params: GenerationParams & { workspace_id?: string; project_id?: string; parent_track_id?: string }): Promise<GenerationJob> =>
     api('/api/generate', { method: 'POST', body: params }),
 
   getStatus: (jobId: string): Promise<GenerationJob> =>
@@ -108,6 +111,7 @@ export const generateApi = {
     duration?: number;
     keyScale?: string;
     timeSignature?: string;
+    vocalLanguage?: string;
     temperature?: number;
     topK?: number;
     topP?: number;
@@ -124,6 +128,9 @@ export const generateApi = {
     status_message?: string;
     error?: string;
   }> => api('/api/generate/format', { method: 'POST', body: params }),
+
+  generateTitle: (params: { caption?: string; lyrics?: string }): Promise<{ title: string }> =>
+    api('/api/generate/generate-title', { method: 'POST', body: params }),
 
   // Random description from Gradio's example library
   getRandomDescription: (): Promise<{
@@ -445,8 +452,12 @@ export const tracksApi = {
     api<Track>(`/api/tracks/${id}`, { method: 'PATCH', body: data }),
   delete: (id: string) =>
     api<void>(`/api/tracks/${id}`, { method: 'DELETE' }),
-  iterate: (id: string, overrides?: { title?: string; prompt?: string; style?: string }) =>
-    api<Track>(`/api/tracks/${id}/iterate`, { method: 'POST', body: overrides ?? {} }),
+  iterate: (id: string) =>
+    api<{ sourceTrackId: string; workspaceId: string; projectId?: string; caption?: string; lyrics?: string; duration?: number; bpm?: number; keyScale?: string; timeSignature?: string; taskType?: string; ditModel?: string; inferenceSteps?: number; guidanceScale?: number; shift?: number; vocalLanguage?: string }>(`/api/tracks/${id}/iterate`, { method: 'POST', body: {} }),
+  splitStems: (id: string, params: { model?: string; stems?: string[] }) =>
+    api<{ jobId: string }>(`/api/tracks/${id}/split-stems`, { method: 'POST', body: params }),
+  getStemJob: (id: string, jobId: string) =>
+    api<{ status: 'running' | 'succeeded' | 'failed'; stems?: Stem[]; error?: string; elapsed: number }>(`/api/tracks/${id}/split-stems/${jobId}`),
 };
 
 // Stems API
@@ -476,7 +487,7 @@ export const studioApi = {
     api<StudioLayer[]>(`/api/studio/sessions/${sessionId}/layers`),
   addLayer: (sessionId: string, data: Partial<StudioLayer> & { source_type: LayerSourceType; name: string; audio_url: string }) =>
     api<StudioLayer>(`/api/studio/sessions/${sessionId}/layers`, { method: 'POST', body: data }),
-  updateLayer: (layerId: string, data: Partial<Pick<StudioLayer, 'name' | 'volume' | 'is_muted' | 'is_solo' | 'sort_order'>>) =>
+  updateLayer: (layerId: string, data: Partial<Pick<StudioLayer, 'name' | 'volume' | 'is_muted' | 'is_solo' | 'sort_order' | 'start_offset' | 'clip_start' | 'clip_end'>>) =>
     api<StudioLayer>(`/api/studio/layers/${layerId}`, { method: 'PATCH', body: data }),
   deleteLayer: (layerId: string) =>
     api<void>(`/api/studio/layers/${layerId}`, { method: 'DELETE' }),
