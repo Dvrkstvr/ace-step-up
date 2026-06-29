@@ -10,6 +10,8 @@ export interface StudioAudioEngine {
   stop: () => void;
   seek: (seconds: number) => void;
   loadLayers: (layers: StudioLayer[]) => Promise<void>;
+  /** Sync layer metadata (clip points, volume, etc.) immediately without re-decoding audio. */
+  updateLayersMetadata: (layers: StudioLayer[]) => void;
 }
 
 interface LayerBuffer {
@@ -285,6 +287,16 @@ export function useStudioAudio(): StudioAudioEngine {
     }
   });
 
+  // ── updateLayersMetadata ─────────────────────────────────────────────────
+  // Syncs layer refs immediately without re-decoding. Call this after any
+  // metadata change (clip points, volume) so play() uses the latest values.
+
+  const updateLayersMetadata = useCallback((layers: StudioLayer[]) => {
+    layersRef.current = layers;
+    setTotalDuration(computeTotalDuration(layers, buffersRef.current));
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   // ── Cleanup ───────────────────────────────────────────────────────────────
 
   useEffect(() => {
@@ -307,5 +319,6 @@ export function useStudioAudio(): StudioAudioEngine {
     stop,
     seek,
     loadLayers,
+    updateLayersMetadata,
   };
 }

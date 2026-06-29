@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { Settings, Sun, Moon, ChevronRight } from 'lucide-react';
 import { useWorkspace } from '../context/WorkspaceContext';
 import { SettingsModal } from './SettingsModal';
+import { systemApi } from '../services/api';
 import { TopView } from '../types';
 
 interface TopNavProps {
@@ -13,6 +14,24 @@ const TopNav: React.FC<TopNavProps> = ({ topView, onChangeView }) => {
   const { breadcrumb, navigateTo } = useWorkspace();
 
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [health, setHealth] = useState<{ api: boolean; backend: boolean } | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    const check = () => {
+      systemApi.getHealth().then(h => { if (!cancelled) setHealth(h); });
+    };
+    check();
+    const id = setInterval(check, 15_000);
+    return () => { cancelled = true; clearInterval(id); };
+  }, []);
+
+  useEffect(() => {
+    const handler = () => setSettingsOpen(true);
+    window.addEventListener('ace:open-settings', handler);
+    return () => window.removeEventListener('ace:open-settings', handler);
+  }, []);
+
   const [theme, setTheme] = useState<'light' | 'dark'>(() => {
     try {
       return (localStorage.getItem('ace-theme') as 'light' | 'dark') || 'dark';
@@ -123,6 +142,27 @@ const TopNav: React.FC<TopNavProps> = ({ topView, onChangeView }) => {
 
         {/* Right controls */}
         <div className="flex items-center gap-1 flex-shrink-0">
+          {/* Health indicators */}
+          {health !== null && (
+            <div className="flex items-center gap-2.5 mr-2 px-2.5 py-1 rounded-lg bg-zinc-100 dark:bg-black/20 border border-zinc-200 dark:border-white/5">
+              <span
+                className="flex items-center gap-1.5"
+                title={health.api ? 'API server online' : 'API server offline'}
+              >
+                <span className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${health.api ? 'bg-green-500' : 'bg-red-500'}`} />
+                <span className="text-[10px] font-medium text-zinc-500 dark:text-zinc-400 hidden sm:inline">API</span>
+              </span>
+              <span
+                className="flex items-center gap-1.5"
+                title={health.backend ? 'ACE-Step backend online' : 'ACE-Step backend offline'}
+              >
+                <span className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${
+                  !health.api ? 'bg-zinc-400' : health.backend ? 'bg-green-500' : 'bg-red-500'
+                }`} />
+                <span className="text-[10px] font-medium text-zinc-500 dark:text-zinc-400 hidden sm:inline">ACE-Step</span>
+              </span>
+            </div>
+          )}
           <button
             onClick={() => setSettingsOpen(true)}
             className="p-2 rounded-lg text-zinc-500 dark:text-zinc-400 hover:text-zinc-900 dark:hover:text-white hover:bg-zinc-100 dark:hover:bg-white/10 transition-colors"

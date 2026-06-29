@@ -21,6 +21,9 @@ import { getStorageProvider } from '../services/storage/factory.js';
 
 const router = Router();
 
+// Track in-progress model downloads so the UI can show real status
+const modelDownloadStatus = new Map<string, 'downloading' | 'done' | 'error'>();
+
 // Auto-generate a song title from lyrics or style when none is provided
 function autoTitle(params: { title?: string; lyrics?: string; instrumental?: boolean; style?: string; songDescription?: string }): string {
   if (params.title?.trim()) return params.title.trim();
@@ -156,6 +159,7 @@ interface GenerateBody {
   workspace_id?: string;
   project_id?: string;
   parent_track_id?: string;
+  skipTrackCreate?: boolean;
 }
 
 router.post('/upload-audio', authMiddleware, (req: AuthenticatedRequest, res: Response, next: Function) => {
@@ -272,6 +276,7 @@ router.post('/', async (req, res: Response) => {
       workspace_id,
       project_id,
       parent_track_id,
+      skipTrackCreate,
     } = req.body as GenerateBody;
 
     if (!customMode && !songDescription) {
@@ -343,6 +348,7 @@ router.post('/', async (req, res: Response) => {
       workspace_id,
       project_id,
       parent_track_id,
+      skipTrackCreate,
     };
 
     // Create job record in database
@@ -428,7 +434,7 @@ router.get('/status/:jobId', authMiddleware, async (req: AuthenticatedRequest, r
 
             try {
               const primaryAudioUrl = audioUrls[0];
-              if (primaryAudioUrl) {
+              if (primaryAudioUrl && !params.skipTrackCreate) {
                 const trackTitle = autoTitle(params);
                 const prompt = params.songDescription || params.style || '';
                 const trackId = generateUUID();
@@ -582,12 +588,15 @@ router.get('/models', async (_req, res: Response) => {
     // - MAIN_MODEL_COMPONENTS includes "acestep-v15-turbo" (bundled with main download)
     // - SUBMODEL_REGISTRY includes the rest (separate HuggingFace repos, auto-downloaded on init)
     const ALL_DIT_MODELS = [
-      'acestep-v15-turbo',             // default, from main model repo
-      'acestep-v15-base',              // submodel
-      'acestep-v15-sft',               // submodel
-      'acestep-v15-turbo-shift1',      // submodel
-      'acestep-v15-turbo-shift3',      // submodel
-      'acestep-v15-turbo-continuous',   // submodel
+      'acestep-v15-turbo',
+      'acestep-v15-base',
+      'acestep-v15-sft',
+      'acestep-v15-turbo-shift1',
+      'acestep-v15-turbo-shift3',
+      'acestep-v15-turbo-continuous',
+      'acestep-v15-xl-turbo',
+      'acestep-v15-xl-sft',
+      'acestep-v15-xl-base',
     ];
 
     // Query Gradio /v1/models to get the currently loaded/active model
@@ -636,6 +645,7 @@ router.get('/models', async (_req, res: Response) => {
       name,
       is_active: name === activeModel,
       is_preloaded: downloaded.has(name),
+      is_downloading: modelDownloadStatus.get(name) === 'downloading',
     }));
 
     // Sort: active first, then downloaded, then alphabetical
@@ -648,6 +658,76 @@ router.get('/models', async (_req, res: Response) => {
     res.json({ models });
   } catch (error) {
     console.error('Models error:', error);
+    res.status(500).json({ error: (error as Error).message });
+  }
+});
+
+// POST /api/generate/models/download — Download a DiT model via ACE-Step's built-in CLI
+router.post('/models/download', async (req, res: Response) => {
+  try {
+    const { name } = req.body as { name?: string };
+
+    // All models supported by: uv run acestep-download --model <name>
+    const VALID_MODELS = new Set([
+      'acestep-v15-turbo',
+      'acestep-v15-base',
+      'acestep-v15-sft',
+      'acestep-v15-turbo-shift1',
+      'acestep-v15-turbo-shift3',
+      'acestep-v15-turbo-continuous',
+      'acestep-v15-xl-turbo',
+      'acestep-v15-xl-sft',
+      'acestep-v15-xl-base',
+    ]);
+
+    if (!name) {
+      res.status(400).json({ error: 'Model name required' });
+      return;
+    }
+    if (!VALID_MODELS.has(name)) {
+      res.status(400).json({ error: `Unknown model: ${name}` });
+      return;
+    }
+
+    const ACESTEP_DIR = process.env.ACESTEP_PATH || path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../ACE-Step-1.5');
+    const checkpointsDir = path.join(ACESTEP_DIR, 'checkpoints');
+    const modelPath = path.join(checkpointsDir, name);
+
+    const { existsSync, statSync } = await import('fs');
+    if (existsSync(modelPath) && statSync(modelPath).isDirectory()) {
+      res.json({ status: 'already_downloaded', message: 'Model is already available on disk.' });
+      return;
+    }
+
+    modelDownloadStatus.set(name, 'downloading');
+    res.json({ status: 'downloading', message: `Downloading ${name}…` });
+
+    const { spawn } = await import('child_process');
+    const proc = spawn('uv', ['run', 'acestep-download', '--model', name], {
+      cwd: ACESTEP_DIR,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+
+    let stderr = '';
+    proc.stderr?.on('data', (d: Buffer) => { stderr += d.toString(); });
+    proc.stdout?.on('data', (d: Buffer) => { console.log(`[ModelDownload] ${d.toString().trim()}`); });
+
+    proc.on('close', (code) => {
+      if (code !== 0) {
+        modelDownloadStatus.set(name, 'error');
+        console.error(`[ModelDownload] ${name} failed (exit ${code}): ${stderr.slice(0, 500)}`);
+      } else {
+        modelDownloadStatus.delete(name);
+        console.log(`[ModelDownload] ${name} downloaded successfully`);
+      }
+    });
+
+    proc.on('error', (err) => {
+      modelDownloadStatus.set(name, 'error');
+      console.error(`[ModelDownload] Spawn error for ${name}: ${err.message}`);
+    });
+  } catch (error) {
+    console.error('Model download error:', error);
     res.status(500).json({ error: (error as Error).message });
   }
 });

@@ -1,7 +1,8 @@
-import { writeFile, mkdir, copyFile, rm, readFile } from 'fs/promises';
+import { writeFile, mkdir, copyFile as fsCopyFile, rm, readFile } from 'fs/promises';
 import { spawn } from 'child_process';
 import { existsSync } from 'fs';
 import path from 'path';
+import os from 'os';
 import { handle_file } from '@gradio/client';
 import { parseBuffer } from 'music-metadata';
 import { fileURLToPath } from 'url';
@@ -82,6 +83,22 @@ function resolveAudioPath(audioUrl: string): string {
     } catch { /* fall through */ }
   }
   return audioUrl;
+}
+
+/**
+ * Copy an audio file into the system temp directory so ACE-Step's REST API
+ * will accept the path (it rejects absolute paths outside of temp).
+ * Returns the temp path, or the original absolute path if copy fails.
+ */
+async function copyToTemp(absolutePath: string): Promise<string> {
+  const ext = path.extname(absolutePath) || '.audio';
+  const tmpPath = path.join(os.tmpdir(), `acestep_src_${Date.now()}${ext}`);
+  try {
+    await fsCopyFile(absolutePath, tmpPath);
+    return tmpPath;
+  } catch {
+    return absolutePath;
+  }
 }
 
 /**
@@ -199,7 +216,7 @@ async function downloadGradioAudioFile(
 
   // Prefer direct filesystem copy (both servers on same machine)
   if (fileObj.path && existsSync(fileObj.path)) {
-    await copyFile(fileObj.path, destPath);
+    await fsCopyFile(fileObj.path, destPath);
     return;
   }
 
@@ -346,8 +363,10 @@ setInterval(() => cleanupOldJobs(3600000), 600000);
 const jobQueue: string[] = [];
 let isProcessingQueue = false;
 
-// Health check - verify Gradio app is reachable
+// Health check - verify backend is reachable (REST API or Gradio)
 export async function checkSpaceHealth(): Promise<boolean> {
+  // Try the REST API health endpoint first (avoids Gradio-specific 404 noise on FastAPI backends)
+  if (await isRestApiAvailable()) return true;
   return isGradioAvailable();
 }
 
@@ -678,7 +697,11 @@ async function processGenerationViaRestAPI(
   const lyrics = params.instrumental ? '[Instrumental]' : (params.lyrics || '');
   const batchSize = Math.min(Math.max(params.batchSize ?? 1, 1), 16);
 
-  // Model is passed in the request body — no separate init call needed
+  // Ensure the requested model is loaded before generating
+  if (params.ditModel) {
+    job.stage = `Loading model ${params.ditModel}...`;
+    await switchModelIfNeeded(params.ditModel);
+  }
 
   console.log(`Job ${jobId}: Using REST API /v1/chat/completions`, {
     prompt: prompt.slice(0, 50),
@@ -690,11 +713,45 @@ async function processGenerationViaRestAPI(
 
   const audioFormat = params.audioFormat ?? 'mp3';
 
+  // Build the messages array — include source audio as an input_audio blob
+  // when needed (the /v1/chat/completions endpoint reads audio from messages content,
+  // not from a flat src_audio_path field)
+  const messageContent: unknown[] = [{ type: 'text', text: prompt }];
+  if (params.sourceAudioUrl) {
+    const resolved = resolveAudioPath(params.sourceAudioUrl);
+    try {
+      const audioData = await readFile(resolved);
+      const b64 = audioData.toString('base64');
+      const ext = (path.extname(resolved).slice(1) || 'flac').toLowerCase();
+      messageContent.push({
+        type: 'input_audio',
+        input_audio: { data: b64, format: ext },
+      });
+    } catch (err) {
+      console.warn(`[REST] Could not embed source audio from ${resolved}:`, err);
+    }
+  }
+  if (params.referenceAudioUrl) {
+    const resolved = resolveAudioPath(params.referenceAudioUrl);
+    try {
+      const audioData = await readFile(resolved);
+      const b64 = audioData.toString('base64');
+      const ext = (path.extname(resolved).slice(1) || 'flac').toLowerCase();
+      messageContent.push({
+        type: 'input_audio',
+        input_audio: { data: b64, format: ext },
+      });
+    } catch (err) {
+      console.warn(`[REST] Could not embed reference audio from ${resolved}:`, err);
+    }
+  }
+  const messages = [{ role: 'user', content: messageContent.length === 1 ? prompt : messageContent }];
+
   // The OpenRouter-compatible chat completions endpoint accepts generation params
   // as extra fields alongside the standard messages array
   const requestBody: Record<string, unknown> = {
     model: params.ditModel ?? 'acestep',
-    messages: [{ role: 'user', content: prompt }],
+    messages,
     stream: false,
     // ACE-Step-specific generation params
     prompt,
@@ -721,8 +778,6 @@ async function processGenerationViaRestAPI(
   if (params.lmTopK && params.lmTopK > 0) requestBody.lm_top_k = params.lmTopK;
   if (params.lmNegativePrompt) requestBody.lm_negative_prompt = params.lmNegativePrompt;
   if (params.instruction) requestBody.instruction = params.instruction;
-  if (params.referenceAudioUrl) requestBody.reference_audio_path = resolveAudioPath(params.referenceAudioUrl);
-  if (params.sourceAudioUrl) requestBody.src_audio_path = resolveAudioPath(params.sourceAudioUrl);
   if (params.audioCoverStrength !== undefined) requestBody.audio_cover_strength = params.audioCoverStrength;
   if (params.audioCodes) requestBody.audio_code_string = params.audioCodes;
   if (params.repaintingStart !== undefined) requestBody.repainting_start = params.repaintingStart;
@@ -894,7 +949,7 @@ async function processGenerationViaPython(
       const destPath = path.join(AUDIO_DIR, filename);
 
       await mkdir(AUDIO_DIR, { recursive: true });
-      await copyFile(srcPath, destPath);
+      await fsCopyFile(srcPath, destPath);
 
       if (audioUrls.length === 0) {
         try {

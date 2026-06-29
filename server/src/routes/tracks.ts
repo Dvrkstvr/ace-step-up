@@ -363,4 +363,65 @@ router.get('/:id/split-stems/:jobId', (req: Request, res: Response) => {
   res.json({ status: job.status, stems: job.stems, error: job.error, elapsed });
 });
 
+// ─── Standalone Demucs endpoint (no track record required) ──────────────────
+
+const standaloneDemucsJobs = new Map<string, StemJob>();
+setInterval(() => {
+  const cutoff = Date.now() - 3_600_000;
+  for (const [id, job] of standaloneDemucsJobs) {
+    if (job.startTime < cutoff) standaloneDemucsJobs.delete(id);
+  }
+}, 600_000);
+
+// POST /api/stems/demucs — split any audio URL with Demucs, no track needed
+router.post('/demucs', async (req: Request, res: Response) => {
+  const { audioUrl, model, stems: selectedStems } = req.body as {
+    audioUrl?: string;
+    model?: string;
+    stems?: string[];
+  };
+
+  if (!audioUrl) {
+    res.status(400).json({ error: 'audioUrl is required' });
+    return;
+  }
+
+  const demucsModel: DemucsModel = (model as DemucsModel) || 'htdemucs_6s';
+  if (!DEMUCS_MODEL_STEMS[demucsModel]) {
+    res.status(400).json({ error: `Unknown model: ${demucsModel}` });
+    return;
+  }
+
+  const jobId = `demucs_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+  standaloneDemucsJobs.set(jobId, { status: 'running', startTime: Date.now() });
+  res.json({ jobId });
+
+  (async () => {
+    const job = standaloneDemucsJobs.get(jobId)!;
+    try {
+      const audioPath = resolveAudioPath(audioUrl);
+      const tmpId = `build_${jobId}`;
+      const results = await splitWithDemucs(audioPath, tmpId, demucsModel, selectedStems);
+      job.status = 'succeeded';
+      // Return stems as { instrument_class, audio_url } objects
+      job.stems = results;
+    } catch (err) {
+      job.status = 'failed';
+      job.error = err instanceof Error ? err.message : 'Stem splitting failed';
+      console.error(`[Demucs standalone] Job ${jobId} failed:`, err);
+    }
+  })();
+});
+
+// GET /api/stems/demucs/:jobId — poll standalone Demucs job
+router.get('/demucs/:jobId', (req: Request, res: Response) => {
+  const job = standaloneDemucsJobs.get(req.params.jobId);
+  if (!job) {
+    res.status(404).json({ error: 'Job not found' });
+    return;
+  }
+  const elapsed = Math.round((Date.now() - job.startTime) / 1000);
+  res.json({ status: job.status, stems: job.stems, error: job.error, elapsed });
+});
+
 export default router;

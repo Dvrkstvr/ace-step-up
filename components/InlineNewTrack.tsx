@@ -1,10 +1,12 @@
 import React, { useState, useRef, useCallback, useEffect } from 'react';
 import {
   Plus, ChevronDown, Music, Upload, Loader2, Sparkles, Wand2, Shuffle,
-  Brain, Mic, Info, X, Play, Clock, Check,
+  Brain, Mic, Info, X, Play, Clock, Check, HelpCircle, Zap, Layers,
 } from 'lucide-react';
 import type { Track } from '../types';
-import { generateApi, tracksApi } from '../services/api';
+import { generateApi, tracksApi, systemApi } from '../services/api';
+import { ModelSelectionHelper, DIT_MODEL_META, configSummary, type ModelConfig, type DitModelEntry } from './ModelSelectionHelper';
+import BuildTab from './BuildTab';
 
 // ─── Shared constants (duplicated from NewTrackModal to keep file self-contained) ─
 
@@ -42,13 +44,6 @@ const ENERGY_TAGS = [
   { label: 'building', tag: '[building energy]' }, { label: 'explosive', tag: '[explosive]' },
   { label: 'melancholic', tag: '[melancholic]' }, { label: 'euphoric', tag: '[euphoric]' },
   { label: 'dreamy', tag: '[dreamy]' },
-];
-const DIT_MODELS = [
-  { value: 'acestep-v15-turbo', label: 'Turbo', description: 'Fast, 8 steps. Recommended.' },
-  { value: 'acestep-v15-turbo-shift1', label: 'Turbo Shift-1', description: 'Richer details, weaker semantics.' },
-  { value: 'acestep-v15-turbo-shift3', label: 'Turbo Shift-3', description: 'Clearer timbre, minimal orchestration.' },
-  { value: 'acestep-v15-sft', label: 'SFT', description: '50 steps, CFG support.' },
-  { value: 'acestep-v15-base', label: 'Base', description: 'All tasks. Best for fine-tuning.' },
 ];
 const KEY_SIGS = ['C major', 'C minor', 'C# major', 'C# minor', 'D major', 'D minor', 'D# major', 'D# minor', 'Eb major', 'Eb minor', 'E major', 'E minor', 'F major', 'F minor', 'F# major', 'F# minor', 'Gb major', 'Gb minor', 'G major', 'G minor', 'G# major', 'G# minor', 'Ab major', 'Ab minor', 'A major', 'A minor', 'A# major', 'A# minor', 'Bb major', 'Bb minor', 'B major', 'B minor'];
 const VOCAL_LANGUAGES = [
@@ -143,6 +138,7 @@ interface InlineNewTrackProps {
 export default function InlineNewTrack({ workspaceId, projectId, onTrackCreated, onSelect, prefill, autoOpen }: InlineNewTrackProps) {
   const [phase, setPhase] = useState<Phase>('closed');
   const [createdTrack, setCreatedTrack] = useState<Track | null>(null);
+  const [activeTab, setActiveTab] = useState<'generate' | 'build'>('generate');
 
   // ── Form state ──
   const [taskType, setTaskType] = useState<TaskType>(prefill?.taskType ?? 'text2music');
@@ -178,6 +174,10 @@ export default function InlineNewTrack({ workspaceId, projectId, onTrackCreated,
 
   const [thinking, setThinking] = useState(true);
   const [ditModel, setDitModel] = useState(prefill?.ditModel ?? 'acestep-v15-turbo');
+  const [lmModel, setLmModel] = useState('acestep-5Hz-lm-1.7B');
+  const [showHelper, setShowHelper] = useState(false);
+  const [helperLabel, setHelperLabel] = useState<string | null>(null);
+  const [fetchedDitModels, setFetchedDitModels] = useState<DitModelEntry[]>([]);
 
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [inferenceSteps, setInferenceSteps] = useState(prefill?.inferenceSteps ?? 8);
@@ -217,13 +217,32 @@ export default function InlineNewTrack({ workspaceId, projectId, onTrackCreated,
     setLyricsPrompt(''); setRefinedPromptLyrics(''); setIsRefining(false);
     setDuration(30); setBpm(0); setKeyScale(''); setTimeSignature('4/4'); setVocalLanguage('en');
     setSourceAudioFile(null); setSourceAudioUrl(''); setIsUploadingAudio(false);
-    setThinking(true); setDitModel('acestep-v15-turbo');
+    setThinking(true); setDitModel('acestep-v15-turbo'); setLmModel('acestep-5Hz-lm-1.7B');
+    setShowHelper(false); setHelperLabel(null);
     setShowAdvanced(false); setInferenceSteps(8); setGuidanceScale(7.0); setLmTemperature(0.85); setShift(3.0); setBatchSize(1);
     setStage(''); setError(null); setEstimatedProgress(0);
   };
 
   // Clean up on unmount
   useEffect(() => () => { stopPolling(); stopProgress(); }, []);
+
+  // Fetch available models once when the form opens
+  useEffect(() => {
+    if (phase === 'open' && fetchedDitModels.length === 0) {
+      systemApi.getModels()
+        .then(data => setFetchedDitModels(data.models.map(m => ({ name: m.name, downloaded: m.is_preloaded }))))
+        .catch(() => { /* keep fallback list */ });
+    }
+  }, [phase]);
+
+  const handleHelperApply = useCallback((config: ModelConfig) => {
+    setDitModel(config.ditModel);
+    setLmModel(config.lmModel);
+    setThinking(config.thinking);
+    setInferenceSteps(config.inferenceSteps);
+    setHelperLabel(configSummary(config));
+    setShowHelper(false);
+  }, []);
 
   const handleChipClick = useCallback((chip: string) => {
     setCaption(prev => {
@@ -355,7 +374,7 @@ export default function InlineNewTrack({ workspaceId, projectId, onTrackCreated,
         inferenceSteps, guidanceScale, batchSize, randomSeed: true, seed: -1,
         thinking: thinking || lyricsMode === 'prompt', audioFormat: 'mp3', inferMethod: 'ode',
         shift, lmTemperature, lmCfgScale: 2.0, lmTopK: 0, lmTopP: 0.9, lmNegativePrompt: '',
-        ditModel, taskType,
+        ditModel, lmModel: lmModel || undefined, taskType,
         ...(sourceAudioUrl && taskType !== 'text2music' ? { sourceAudioUrl } : {}),
       });
 
@@ -372,27 +391,35 @@ export default function InlineNewTrack({ workspaceId, projectId, onTrackCreated,
             stopProgress();
             setEstimatedProgress(100);
 
-            const audioUrl = status.result?.audioUrls?.[0];
-            const titleSource = trackTitle.trim()
-              || (lyricsMode === 'custom' && lyrics
-                ? lyrics.split('\n').find(l => l.trim() && !/^\[.*\]$/.test(l.trim())) || caption
-                : caption);
-
-            const track = await tracksApi.create({
-              title: (titleSource || 'Generated Track').slice(0, 80),
-              workspace_id: workspaceId,
-              ...(projectId ? { project_id: projectId } : {}),
-              audio_url: audioUrl,
-              task_type: taskType,
-              prompt: caption || undefined,
-              lyrics: finalLyrics || undefined,
-              style: caption || undefined,
-              duration: status.result?.duration ?? duration,
-              ...(status.result?.bpm ? { bpm: status.result.bpm } : bpm > 0 ? { bpm } : {}),
-              ...(status.result?.keyScale ? { key_scale: status.result.keyScale } : keyScale ? { key_scale: keyScale } : {}),
-              ...(status.result?.timeSignature ? { time_signature: status.result.timeSignature } : timeSignature ? { time_signature: timeSignature } : {}),
-              tags: caption ? caption.split(',').map(s => s.trim()).filter(Boolean).slice(0, 5) : [],
-            });
+            // The server already creates a track record when it detects success.
+            // Fetch it by ID to avoid creating a duplicate.
+            const serverTrack = status.result?.track as { id?: string } | undefined;
+            let track: Track;
+            if (serverTrack?.id) {
+              track = await tracksApi.get(serverTrack.id);
+            } else {
+              // Fallback: server didn't return a track (older server or error) — create one
+              const audioUrl = status.result?.audioUrls?.[0];
+              const titleSource = trackTitle.trim()
+                || (lyricsMode === 'custom' && lyrics
+                  ? lyrics.split('\n').find(l => l.trim() && !/^\[.*\]$/.test(l.trim())) || caption
+                  : caption);
+              track = await tracksApi.create({
+                title: (titleSource || 'Generated Track').slice(0, 80),
+                workspace_id: workspaceId,
+                ...(projectId ? { project_id: projectId } : {}),
+                audio_url: audioUrl,
+                task_type: taskType,
+                prompt: caption || undefined,
+                lyrics: finalLyrics || undefined,
+                style: caption || undefined,
+                duration: status.result?.duration ?? duration,
+                ...(status.result?.bpm ? { bpm: status.result.bpm } : bpm > 0 ? { bpm } : {}),
+                ...(status.result?.keyScale ? { key_scale: status.result.keyScale } : keyScale ? { key_scale: keyScale } : {}),
+                ...(status.result?.timeSignature ? { time_signature: status.result.timeSignature } : timeSignature ? { time_signature: timeSignature } : {}),
+                tags: caption ? caption.split(',').map(s => s.trim()).filter(Boolean).slice(0, 5) : [],
+              });
+            }
 
             setCreatedTrack(track);
             // Brief pause so 100% progress registers visually, then fade to done
@@ -513,22 +540,70 @@ export default function InlineNewTrack({ workspaceId, projectId, onTrackCreated,
 
   const expandedForm = (
     <div className={`overflow-hidden transition-all duration-300 ease-in-out ${isOpen ? 'max-h-[1200px] opacity-100' : 'max-h-0 opacity-0'}`}>
-      <div className="overflow-y-auto max-h-[1160px] px-4 pb-5 pt-1 space-y-4">
+      <div className="relative overflow-y-auto max-h-[1160px] px-4 pb-5 pt-1 space-y-4">
 
-        {/* Header row: thinking toggle + close */}
+        {/* Header row: tab pills + thinking toggle + help + close */}
         <div className="flex items-center justify-between pt-2 pb-2 border-b border-zinc-100 dark:border-white/5">
-          <button
-            onClick={() => setThinking(t => !t)}
-            title={thinking ? 'LM thinking enabled — auto-infers metadata and enriches caption' : 'LM thinking disabled'}
-            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold border transition-all ${
-              thinking
-                ? 'bg-purple-50 dark:bg-purple-500/15 border-purple-300 dark:border-purple-500/40 text-purple-700 dark:text-purple-300'
-                : 'bg-zinc-100 dark:bg-black/30 border-zinc-200 dark:border-white/10 text-zinc-500 dark:text-zinc-400'
-            }`}
-          >
-            <Brain size={13} />
-            {thinking ? 'Thinking ON' : 'Thinking OFF'}
-          </button>
+          <div className="flex items-center gap-2">
+            {/* Tab pills */}
+            <div className="flex items-center bg-zinc-100 dark:bg-black/40 rounded-lg p-0.5 gap-0.5">
+              <button
+                onClick={() => setActiveTab('generate')}
+                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-semibold transition-all ${
+                  activeTab === 'generate'
+                    ? 'bg-white dark:bg-zinc-800 text-zinc-900 dark:text-white shadow-sm'
+                    : 'text-zinc-500 dark:text-zinc-400 hover:text-zinc-700 dark:hover:text-zinc-200'
+                }`}
+              >
+                <Sparkles size={11} />
+                Generate
+              </button>
+              <button
+                onClick={() => setActiveTab('build')}
+                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-semibold transition-all ${
+                  activeTab === 'build'
+                    ? 'bg-white dark:bg-zinc-800 text-zinc-900 dark:text-white shadow-sm'
+                    : 'text-zinc-500 dark:text-zinc-400 hover:text-zinc-700 dark:hover:text-zinc-200'
+                }`}
+              >
+                <Layers size={11} />
+                Build
+              </button>
+            </div>
+            {activeTab === 'generate' && <>
+            <button
+              onClick={() => setThinking(t => !t)}
+              title={thinking ? 'LM thinking enabled — auto-infers metadata and enriches caption' : 'LM thinking disabled'}
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold border transition-all ${
+                thinking
+                  ? 'bg-purple-50 dark:bg-purple-500/15 border-purple-300 dark:border-purple-500/40 text-purple-700 dark:text-purple-300'
+                  : 'bg-zinc-100 dark:bg-black/30 border-zinc-200 dark:border-white/10 text-zinc-500 dark:text-zinc-400'
+              }`}
+            >
+              <Brain size={13} />
+              {thinking ? 'Thinking ON' : 'Thinking OFF'}
+            </button>
+            {helperLabel ? (
+              <button
+                onClick={() => setShowHelper(true)}
+                title="Model config applied — click to change"
+                className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-semibold border border-pink-300 dark:border-pink-500/40 bg-pink-50 dark:bg-pink-500/10 text-pink-700 dark:text-pink-300 transition-all max-w-[160px]"
+              >
+                <HelpCircle size={12} />
+                <span className="truncate">{helperLabel}</span>
+              </button>
+            ) : (
+              <button
+                onClick={() => setShowHelper(true)}
+                title="Open model selection helper"
+                className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium border border-zinc-200 dark:border-white/10 bg-zinc-50 dark:bg-black/20 text-zinc-500 dark:text-zinc-400 hover:border-zinc-300 dark:hover:border-white/20 hover:text-zinc-700 dark:hover:text-zinc-300 transition-all"
+              >
+                <HelpCircle size={12} />
+                Help me choose
+              </button>
+            )}
+            </>}
+          </div>
           <button
             onClick={() => { setPhase('closed'); setError(null); }}
             className="p-1.5 hover:bg-zinc-100 dark:hover:bg-white/5 rounded-full transition-colors text-zinc-400 hover:text-zinc-700 dark:hover:text-zinc-200"
@@ -537,7 +612,18 @@ export default function InlineNewTrack({ workspaceId, projectId, onTrackCreated,
           </button>
         </div>
 
-        {/* ── Two-column layout ── */}
+        {/* ── Build tab ── */}
+        {activeTab === 'build' && (
+          <BuildTab
+            workspaceId={workspaceId}
+            projectId={projectId}
+            onTrackCreated={track => { setCreatedTrack(track); setPhase('done'); onTrackCreated(track); }}
+            onClose={() => setPhase('closed')}
+          />
+        )}
+
+        {/* ── Two-column layout (Generate tab only) ── */}
+        {activeTab === 'generate' && <>
         <div className="grid grid-cols-2 gap-5 items-start">
 
           {/* LEFT — Creative content: Style + Lyrics */}
@@ -748,17 +834,42 @@ export default function InlineNewTrack({ workspaceId, projectId, onTrackCreated,
             {/* DiT Model */}
             <div>
               <label className="text-xs font-bold text-zinc-500 dark:text-zinc-400 uppercase tracking-wide mb-2 block">DiT Model</label>
-              <div className="space-y-1">
-                {DIT_MODELS.map(m => (
-                  <button key={m.value} onClick={() => { setDitModel(m.value); setInferenceSteps(m.value.includes('sft') || m.value.includes('base') ? 50 : 8); }}
-                    className={`w-full flex items-center gap-2.5 p-2 rounded-lg border text-left transition-all ${ditModel === m.value ? 'border-pink-400 dark:border-pink-500 bg-pink-50 dark:bg-pink-500/10' : 'border-zinc-200 dark:border-white/10 hover:border-zinc-300 dark:hover:border-white/20 bg-zinc-50 dark:bg-black/20'}`}>
-                    <div className={`w-2.5 h-2.5 rounded-full border-2 flex-shrink-0 ${ditModel === m.value ? 'border-pink-500 bg-pink-500' : 'border-zinc-300 dark:border-zinc-600'}`} />
-                    <div className="min-w-0">
-                      <span className="text-xs font-semibold text-zinc-900 dark:text-white">{m.label}</span>
-                      <span className="text-[11px] text-zinc-400 dark:text-zinc-500 ml-1.5 truncate">{m.description}</span>
-                    </div>
-                  </button>
-                ))}
+              <div className="grid grid-cols-2 gap-1">
+                {(fetchedDitModels.length > 0
+                  ? fetchedDitModels
+                  : Object.keys(DIT_MODEL_META).map(name => ({ name, downloaded: true }))
+                ).map(({ name, downloaded }) => {
+                  const meta = DIT_MODEL_META[name];
+                  return (
+                    <button key={name}
+                      onClick={() => { setDitModel(name); setInferenceSteps(name.includes('sft') || name.includes('base') ? 50 : 8); }}
+                      className={`w-full flex items-start gap-2.5 p-2 rounded-lg border text-left transition-all ${!downloaded ? 'opacity-60' : ''} ${ditModel === name ? 'border-pink-400 dark:border-pink-500 bg-pink-50 dark:bg-pink-500/10' : 'border-zinc-200 dark:border-white/10 hover:border-zinc-300 dark:hover:border-white/20 bg-zinc-50 dark:bg-black/20'}`}>
+                      <div className={`w-2.5 h-2.5 mt-0.5 rounded-full border-2 flex-shrink-0 ${ditModel === name ? 'border-pink-500 bg-pink-500' : 'border-zinc-300 dark:border-zinc-600'}`} />
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-1.5 flex-wrap">
+                          <span className="text-xs font-semibold text-zinc-900 dark:text-white">{meta?.label ?? name}</span>
+                          {meta?.xl && (
+                            <span className="text-[9px] px-1.5 py-0.5 bg-purple-100 dark:bg-purple-500/20 text-purple-600 dark:text-purple-300 rounded font-semibold">XL</span>
+                          )}
+                          {meta && (
+                            <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-medium ${meta.speed === 'fast' ? 'bg-green-100 dark:bg-green-500/20 text-green-700 dark:text-green-300' : 'bg-amber-100 dark:bg-amber-500/20 text-amber-700 dark:text-amber-300'}`}>
+                              {meta.speed === 'fast' ? <Zap size={9} className="inline mr-0.5" /> : <Clock size={9} className="inline mr-0.5" />}
+                              {meta.steps} steps
+                            </span>
+                          )}
+                          {!downloaded && (
+                            <button onClick={e => { e.stopPropagation(); window.dispatchEvent(new CustomEvent('ace:open-settings', { detail: { tab: 'models' } })); }}
+                              className="text-[9px] px-1.5 py-0.5 bg-zinc-100 dark:bg-zinc-800 text-zinc-500 dark:text-zinc-400 hover:bg-blue-100 dark:hover:bg-blue-500/20 hover:text-blue-600 dark:hover:text-blue-400 rounded border border-zinc-200 dark:border-white/10 font-semibold transition-colors">
+                              ↓ Download
+                            </button>
+                          )}
+                        </div>
+                        {meta && <p className="text-[10px] text-zinc-500 dark:text-zinc-400 mt-0.5">{meta.description}</p>}
+                        {meta && <p className="text-[10px] text-zinc-400 dark:text-zinc-600 mt-0.5">{meta.vram} · CFG: {meta.cfgSupport ? 'yes' : 'no'}</p>}
+                      </div>
+                    </button>
+                  );
+                })}
               </div>
             </div>
           </div>
@@ -869,6 +980,17 @@ export default function InlineNewTrack({ workspaceId, projectId, onTrackCreated,
           <Sparkles size={16} />
           Generate{batchSize > 1 ? ` ×${batchSize}` : ''}
         </button>
+
+        {/* Model selection helper overlay */}
+        {showHelper && (
+          <ModelSelectionHelper
+            onApply={handleHelperApply}
+            onClose={() => setShowHelper(false)}
+            availableDitModels={fetchedDitModels}
+          />
+        )}
+        </>}
+
       </div>
     </div>
   );

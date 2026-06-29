@@ -1,10 +1,12 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import {
   X, Music, ChevronDown, Upload, Loader2, Sparkles, Wand2, Shuffle,
-  Brain, Mic, Info,
+  Brain, Mic, Info, HelpCircle, Zap, Clock, Layers,
 } from 'lucide-react';
 import type { Track } from '../types';
-import { generateApi, tracksApi } from '../services/api';
+import { generateApi, tracksApi, systemApi } from '../services/api';
+import { ModelSelectionHelper, DIT_MODEL_META, configSummary, type ModelConfig, type DitModelEntry } from './ModelSelectionHelper';
+import BuildTab from './BuildTab';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -138,15 +140,6 @@ const ENERGY_TAGS = [
   { label: 'dreamy', tag: '[dreamy]' },
 ];
 
-// ─── DiT Models ───────────────────────────────────────────────────────────────
-
-const DIT_MODELS = [
-  { value: 'acestep-v15-turbo', label: 'Turbo', description: 'Best balance — fast, 8 steps. Recommended.' },
-  { value: 'acestep-v15-turbo-shift1', label: 'Turbo Shift-1', description: 'Richer details, weaker semantics.' },
-  { value: 'acestep-v15-turbo-shift3', label: 'Turbo Shift-3', description: 'Clearer timbre, minimal orchestration.' },
-  { value: 'acestep-v15-sft', label: 'SFT', description: '50 steps, CFG support, richer details.' },
-  { value: 'acestep-v15-base', label: 'Base', description: 'All tasks (extract, lego, complete). Best for fine-tuning.' },
-];
 
 const KEY_SIGS = [
   'C major', 'C minor', 'C# major', 'C# minor', 'Db major', 'Db minor',
@@ -258,6 +251,9 @@ export default function NewTrackModal({
   projectId,
   onTrackCreated,
 }: NewTrackModalProps) {
+  // ── Tab ──
+  const [activeTab, setActiveTab] = useState<'generate' | 'build'>('generate');
+
   // ── Task ──
   const [taskType, setTaskType] = useState<TaskType>('text2music');
 
@@ -294,6 +290,10 @@ export default function NewTrackModal({
   // ── Model ──
   const [thinking, setThinking] = useState(true);
   const [ditModel, setDitModel] = useState('acestep-v15-turbo');
+  const [lmModel, setLmModel] = useState('acestep-5Hz-lm-1.7B');
+  const [showHelper, setShowHelper] = useState(false);
+  const [helperLabel, setHelperLabel] = useState<string | null>(null);
+  const [fetchedDitModels, setFetchedDitModels] = useState<DitModelEntry[]>([]);
 
   // ── Advanced ──
   const [showAdvanced, setShowAdvanced] = useState(false);
@@ -314,6 +314,11 @@ export default function NewTrackModal({
 
   useEffect(() => {
     if (!isOpen) { stopPolling(); resetForm(); }
+    if (isOpen && fetchedDitModels.length === 0) {
+      systemApi.getModels()
+        .then(data => setFetchedDitModels(data.models.map(m => ({ name: m.name, downloaded: m.is_preloaded }))))
+        .catch(() => { /* keep fallback list */ });
+    }
   }, [isOpen]);
 
   const stopPolling = () => {
@@ -321,6 +326,7 @@ export default function NewTrackModal({
   };
 
   const resetForm = () => {
+    setActiveTab('generate');
     setTaskType('text2music');
     setCaption('');
     setVisibleChips(initVisibleChips());
@@ -339,6 +345,9 @@ export default function NewTrackModal({
     setIsUploadingAudio(false);
     setThinking(true);
     setDitModel('acestep-v15-turbo');
+    setLmModel('acestep-5Hz-lm-1.7B');
+    setShowHelper(false);
+    setHelperLabel(null);
     setShowAdvanced(false);
     setInferenceSteps(8);
     setGuidanceScale(7.0);
@@ -367,6 +376,16 @@ export default function NewTrackModal({
       next[i] = sample(DIMENSIONS[i].pool, CHIPS_PER_ROW);
       return next;
     });
+  }, []);
+
+  // Model helper apply
+  const handleHelperApply = useCallback((config: ModelConfig) => {
+    setDitModel(config.ditModel);
+    setLmModel(config.lmModel);
+    setThinking(config.thinking);
+    setInferenceSteps(config.inferenceSteps);
+    setHelperLabel(configSummary(config));
+    setShowHelper(false);
   }, []);
 
   // Lyrics tag insertion at cursor
@@ -561,6 +580,7 @@ export default function NewTrackModal({
         lmTopP: 0.9,
         lmNegativePrompt: '',
         ditModel,
+        lmModel: lmModel || undefined,
         taskType,
         ...(sourceAudioUrl && taskType !== 'text2music' ? { sourceAudioUrl } : {}),
       });
@@ -576,27 +596,33 @@ export default function NewTrackModal({
 
           if (status.status === 'succeeded') {
             stopPolling();
-            const audioUrl = status.result?.audioUrls?.[0];
-            const titleSource = trackTitle.trim()
-              || (lyricsMode === 'custom' && lyrics
-                ? lyrics.split('\n').find(l => l.trim() && !/^\[.*\]$/.test(l.trim())) || caption
-                : caption);
 
-            const track = await tracksApi.create({
-              title: (titleSource || 'Generated Track').slice(0, 80),
-              workspace_id: workspaceId,
-              ...(projectId ? { project_id: projectId } : {}),
-              audio_url: audioUrl,
-              task_type: taskType,
-              prompt: caption || undefined,
-              lyrics: finalLyrics || undefined,
-              style: caption || undefined,
-              duration: status.result?.duration ?? duration,
-              ...(status.result?.bpm ? { bpm: status.result.bpm } : bpm > 0 ? { bpm } : {}),
-              ...(status.result?.keyScale ? { key_scale: status.result.keyScale } : keyScale ? { key_scale: keyScale } : {}),
-              ...(status.result?.timeSignature ? { time_signature: status.result.timeSignature } : timeSignature ? { time_signature: timeSignature } : {}),
-              tags: caption ? caption.split(',').map(s => s.trim()).filter(Boolean).slice(0, 5) : [],
-            });
+            const serverTrack = status.result?.track as { id?: string } | undefined;
+            let track: Track;
+            if (serverTrack?.id) {
+              track = await tracksApi.get(serverTrack.id);
+            } else {
+              const audioUrl = status.result?.audioUrls?.[0];
+              const titleSource = trackTitle.trim()
+                || (lyricsMode === 'custom' && lyrics
+                  ? lyrics.split('\n').find(l => l.trim() && !/^\[.*\]$/.test(l.trim())) || caption
+                  : caption);
+              track = await tracksApi.create({
+                title: (titleSource || 'Generated Track').slice(0, 80),
+                workspace_id: workspaceId,
+                ...(projectId ? { project_id: projectId } : {}),
+                audio_url: audioUrl,
+                task_type: taskType,
+                prompt: caption || undefined,
+                lyrics: finalLyrics || undefined,
+                style: caption || undefined,
+                duration: status.result?.duration ?? duration,
+                ...(status.result?.bpm ? { bpm: status.result.bpm } : bpm > 0 ? { bpm } : {}),
+                ...(status.result?.keyScale ? { key_scale: status.result.keyScale } : keyScale ? { key_scale: keyScale } : {}),
+                ...(status.result?.timeSignature ? { time_signature: status.result.timeSignature } : timeSignature ? { time_signature: timeSignature } : {}),
+                tags: caption ? caption.split(',').map(s => s.trim()).filter(Boolean).slice(0, 5) : [],
+              });
+            }
 
             onTrackCreated?.(track);
             onClose();
@@ -625,7 +651,7 @@ export default function NewTrackModal({
   return (
     <div className="fixed inset-0 bg-black/50 z-[70] flex items-center justify-center p-4" onClick={onClose}>
       <div
-        className="bg-white dark:bg-zinc-900 rounded-2xl shadow-2xl w-full max-w-xl max-h-[92vh] flex flex-col"
+        className="relative bg-white dark:bg-zinc-900 rounded-2xl shadow-2xl w-full max-w-xl max-h-[92vh] flex flex-col overflow-hidden"
         onClick={e => e.stopPropagation()}
       >
         {/* ── Header ── */}
@@ -635,8 +661,35 @@ export default function NewTrackModal({
               <Sparkles size={18} className="text-white" />
             </div>
             <h2 className="text-xl font-bold text-zinc-900 dark:text-white">New Track</h2>
+            {/* Tab pills */}
+            <div className="flex items-center bg-zinc-100 dark:bg-black/40 rounded-lg p-0.5 gap-0.5 ml-2">
+              <button
+                onClick={() => setActiveTab('generate')}
+                disabled={isGenerating}
+                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-semibold transition-all disabled:opacity-50 ${
+                  activeTab === 'generate'
+                    ? 'bg-white dark:bg-zinc-800 text-zinc-900 dark:text-white shadow-sm'
+                    : 'text-zinc-500 dark:text-zinc-400 hover:text-zinc-700 dark:hover:text-zinc-200'
+                }`}
+              >
+                <Sparkles size={11} />
+                Generate
+              </button>
+              <button
+                onClick={() => setActiveTab('build')}
+                disabled={isGenerating}
+                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-semibold transition-all disabled:opacity-50 ${
+                  activeTab === 'build'
+                    ? 'bg-white dark:bg-zinc-800 text-zinc-900 dark:text-white shadow-sm'
+                    : 'text-zinc-500 dark:text-zinc-400 hover:text-zinc-700 dark:hover:text-zinc-200'
+                }`}
+              >
+                <Layers size={11} />
+                Build
+              </button>
+            </div>
           </div>
-          <div className="flex items-center gap-3">
+          <div className="flex items-center gap-2">
             {/* Thinking toggle */}
             <button
               onClick={() => setThinking(t => !t)}
@@ -651,6 +704,28 @@ export default function NewTrackModal({
               <Brain size={13} />
               {thinking ? 'Thinking ON' : 'Thinking OFF'}
             </button>
+            {/* Model helper button / applied badge */}
+            {helperLabel ? (
+              <button
+                onClick={() => setShowHelper(true)}
+                disabled={isGenerating}
+                title="Model config applied — click to change"
+                className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-semibold border border-pink-300 dark:border-pink-500/40 bg-pink-50 dark:bg-pink-500/10 text-pink-700 dark:text-pink-300 transition-all disabled:opacity-50 max-w-[160px]"
+              >
+                <HelpCircle size={12} />
+                <span className="truncate">{helperLabel}</span>
+              </button>
+            ) : (
+              <button
+                onClick={() => setShowHelper(true)}
+                disabled={isGenerating}
+                title="Open model selection helper"
+                className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium border border-zinc-200 dark:border-white/10 bg-zinc-50 dark:bg-black/20 text-zinc-500 dark:text-zinc-400 hover:border-zinc-300 dark:hover:border-white/20 hover:text-zinc-700 dark:hover:text-zinc-300 transition-all disabled:opacity-50"
+              >
+                <HelpCircle size={12} />
+                Help me choose
+              </button>
+            )}
             <button
               onClick={onClose}
               disabled={isGenerating}
@@ -661,8 +736,18 @@ export default function NewTrackModal({
           </div>
         </div>
 
-        {/* ── Scrollable body ── */}
-        <div className="overflow-y-auto flex-1 p-6 space-y-5">
+        {/* ── Build tab ── */}
+        {activeTab === 'build' && (
+          <BuildTab
+            workspaceId={workspaceId}
+            projectId={projectId}
+            onTrackCreated={onTrackCreated}
+            onClose={onClose}
+          />
+        )}
+
+        {/* ── Generate tab: Scrollable body ── */}
+        {activeTab === 'generate' && <div className="overflow-y-auto flex-1 p-6 space-y-5">
 
           {/* Track Title */}
           <div>
@@ -1003,33 +1088,75 @@ export default function NewTrackModal({
             <label className="text-xs font-bold text-zinc-500 dark:text-zinc-400 uppercase tracking-wide mb-2 block">
               DiT Model
             </label>
-            <div className="space-y-1.5">
-              {DIT_MODELS.map(m => (
-                <button
-                  key={m.value}
-                  onClick={() => {
-                    setDitModel(m.value);
-                    // SFT/Base default to 50 steps, Turbo to 8
-                    const isSFT = m.value.includes('sft') || m.value.includes('base');
-                    setInferenceSteps(isSFT ? 50 : 8);
-                    setGuidanceScale(isSFT ? 7.0 : 7.0);
-                  }}
-                  disabled={isGenerating}
-                  className={`w-full flex items-center gap-3 p-2.5 rounded-lg border text-left transition-all disabled:opacity-50 ${
-                    ditModel === m.value
-                      ? 'border-pink-400 dark:border-pink-500 bg-pink-50 dark:bg-pink-500/10'
-                      : 'border-zinc-200 dark:border-white/10 hover:border-zinc-300 dark:hover:border-white/20 bg-zinc-50 dark:bg-black/20'
-                  }`}
-                >
-                  <div className={`w-3 h-3 rounded-full border-2 flex-shrink-0 ${
-                    ditModel === m.value ? 'border-pink-500 bg-pink-500' : 'border-zinc-300 dark:border-zinc-600'
-                  }`} />
-                  <div>
-                    <span className="text-sm font-semibold text-zinc-900 dark:text-white">{m.label}</span>
-                    <span className="text-xs text-zinc-500 dark:text-zinc-400 ml-2">{m.description}</span>
-                  </div>
-                </button>
-              ))}
+            <div className="grid grid-cols-2 gap-1.5">
+              {(fetchedDitModels.length > 0
+                ? fetchedDitModels
+                : Object.keys(DIT_MODEL_META).map(name => ({ name, downloaded: true }))
+              ).map(({ name, downloaded }) => {
+                const meta = DIT_MODEL_META[name];
+                return (
+                  <button
+                    key={name}
+                    onClick={() => {
+                      setDitModel(name);
+                      const isSFT = name.includes('sft') || name.includes('base');
+                      setInferenceSteps(isSFT ? 50 : 8);
+                      setGuidanceScale(7.0);
+                    }}
+                    disabled={isGenerating}
+                    className={`w-full flex items-start gap-3 p-2.5 rounded-lg border text-left transition-all disabled:opacity-50 ${
+                      !downloaded ? 'opacity-60' : ''
+                    } ${
+                      ditModel === name
+                        ? 'border-pink-400 dark:border-pink-500 bg-pink-50 dark:bg-pink-500/10'
+                        : 'border-zinc-200 dark:border-white/10 hover:border-zinc-300 dark:hover:border-white/20 bg-zinc-50 dark:bg-black/20'
+                    }`}
+                  >
+                    <div className={`w-3 h-3 mt-0.5 rounded-full border-2 flex-shrink-0 ${
+                      ditModel === name ? 'border-pink-500 bg-pink-500' : 'border-zinc-300 dark:border-zinc-600'
+                    }`} />
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <span className="text-sm font-semibold text-zinc-900 dark:text-white">
+                          {meta?.label ?? name}
+                        </span>
+                        {meta?.xl && (
+                          <span className="text-[10px] px-1.5 py-0.5 bg-purple-100 dark:bg-purple-500/20 text-purple-600 dark:text-purple-300 rounded font-semibold">XL</span>
+                        )}
+                        {meta && (
+                          <span className={`text-[11px] px-2 py-0.5 rounded-full font-medium ${
+                            meta.speed === 'fast'
+                              ? 'bg-green-100 dark:bg-green-500/20 text-green-700 dark:text-green-300'
+                              : 'bg-amber-100 dark:bg-amber-500/20 text-amber-700 dark:text-amber-300'
+                          }`}>
+                            {meta.speed === 'fast' ? <Zap size={10} className="inline mr-0.5" /> : <Clock size={10} className="inline mr-0.5" />}
+                            {meta.steps} steps
+                          </span>
+                        )}
+                        {!downloaded && (
+                          <button
+                            onClick={e => {
+                              e.stopPropagation();
+                              window.dispatchEvent(new CustomEvent('ace:open-settings', { detail: { tab: 'models' } }));
+                            }}
+                            className="text-[10px] px-1.5 py-0.5 bg-zinc-100 dark:bg-zinc-800 text-zinc-500 dark:text-zinc-400 hover:bg-blue-100 dark:hover:bg-blue-500/20 hover:text-blue-600 dark:hover:text-blue-400 rounded border border-zinc-200 dark:border-white/10 font-semibold transition-colors"
+                          >
+                            ↓ Download
+                          </button>
+                        )}
+                      </div>
+                      {meta && (
+                        <p className="text-xs text-zinc-500 dark:text-zinc-400 mt-0.5">{meta.description}</p>
+                      )}
+                      {meta && (
+                        <p className="text-[11px] text-zinc-400 dark:text-zinc-600 mt-1">
+                          {meta.vram} · CFG: {meta.cfgSupport ? 'yes' : 'no'}
+                        </p>
+                      )}
+                    </div>
+                  </button>
+                );
+              })}
             </div>
           </div>
 
@@ -1155,10 +1282,10 @@ export default function NewTrackModal({
               </div>
             </div>
           )}
-        </div>
+        </div>}
 
-        {/* ── Footer ── */}
-        <div className="border-t border-zinc-200 dark:border-white/5 px-6 py-4 flex justify-end gap-3 flex-shrink-0">
+        {/* ── Footer (Generate tab only) ── */}
+        {activeTab === 'generate' && <div className="border-t border-zinc-200 dark:border-white/5 px-6 py-4 flex justify-end gap-3 flex-shrink-0">
           <button
             onClick={onClose}
             disabled={isGenerating}
@@ -1175,7 +1302,16 @@ export default function NewTrackModal({
               ? <><Loader2 size={16} className="animate-spin" />Generating...</>
               : <><Sparkles size={16} />Generate{batchSize > 1 ? ` ×${batchSize}` : ''}</>}
           </button>
-        </div>
+        </div>}
+
+        {/* Model selection helper overlay */}
+        {showHelper && (
+          <ModelSelectionHelper
+            onApply={handleHelperApply}
+            onClose={() => setShowHelper(false)}
+            availableDitModels={fetchedDitModels}
+          />
+        )}
       </div>
     </div>
   );

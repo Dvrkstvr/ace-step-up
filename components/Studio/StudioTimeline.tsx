@@ -50,7 +50,8 @@ interface WaveRowProps {
   onBufferDuration: (id: string, dur: number) => void;
   // Called only on mouseup (not during drag) to persist to server
   onOffsetCommit: (id: string, newOffset: number) => void;
-  onClipStartCommit: (id: string, newClipStart: number) => void;
+  // Left trim moves both clip_start and start_offset together (right edge stays fixed)
+  onLeftTrimCommit: (id: string, newClipStart: number, newStartOffset: number) => void;
   onClipEndCommit: (id: string, newClipEnd: number) => void;
 }
 
@@ -61,7 +62,7 @@ const WaveRow: React.FC<WaveRowProps> = ({
   playheadTime,
   onBufferDuration,
   onOffsetCommit,
-  onClipStartCommit,
+  onLeftTrimCommit,
   onClipEndCommit,
 }) => {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -81,6 +82,7 @@ const WaveRow: React.FC<WaveRowProps> = ({
     type: 'body' | 'left-trim' | 'right-trim';
     startX: number;
     startValue: number;
+    startOffsetValue: number; // start_offset at drag start, used by left-trim
     pixelsPerSecond: number;
   } | null>(null);
 
@@ -159,7 +161,7 @@ const WaveRow: React.FC<WaveRowProps> = ({
       else if (type === 'left-trim') startValue = layer.clip_start;
       else startValue = layer.clip_end ?? bufDurRef.current;
 
-      dragRef.current = { type, startX: e.clientX, startValue, pixelsPerSecond: pxPerSec };
+      dragRef.current = { type, startX: e.clientX, startValue, startOffsetValue: layer.start_offset, pixelsPerSecond: pxPerSec };
 
       // Initialise visual state from current layer values
       setDragVisual({
@@ -174,12 +176,16 @@ const WaveRow: React.FC<WaveRowProps> = ({
         const { type: dt, startValue: sv } = dragRef.current;
 
         setDragVisual(prev => {
-          if (!prev) return prev;
+          if (!prev || !dragRef.current) return prev;
           if (dt === 'body') {
             return { ...prev, startOffset: Math.max(0, sv + dSec) };
           } else if (dt === 'left-trim') {
+            // Clamp new clip_start between 0 and clip_end - 0.1
             const newCs = Math.max(0, Math.min(sv + dSec, (prev.clipEnd ?? bufDurRef.current) - 0.1));
-            return { ...prev, clipStart: newCs };
+            // Move start_offset by the same delta so the right edge stays fixed
+            const delta = newCs - sv;
+            const newOffset = Math.max(0, dragRef.current.startOffsetValue + delta);
+            return { ...prev, clipStart: newCs, startOffset: newOffset };
           } else {
             const newCe = Math.max(prev.clipStart + 0.1, Math.min(sv + dSec, bufDurRef.current));
             return { ...prev, clipEnd: newCe };
@@ -188,13 +194,16 @@ const WaveRow: React.FC<WaveRowProps> = ({
       };
 
       const onUp = () => {
-        // Persist final value to server only once on mouseup
+        // Capture type before nulling the ref — updater may run after assignment
+        const finalType = dragRef.current?.type ?? type;
         setDragVisual(final => {
           if (final) {
-            const { type: dt } = dragRef.current ?? { type };
-            if (dt === 'body')       onOffsetCommit(layer.id, final.startOffset);
-            else if (dt === 'left-trim') onClipStartCommit(layer.id, final.clipStart);
-            else                     onClipEndCommit(layer.id, final.clipEnd ?? bufDurRef.current);
+            if (finalType === 'body')
+              onOffsetCommit(layer.id, final.startOffset);
+            else if (finalType === 'left-trim')
+              onLeftTrimCommit(layer.id, final.clipStart, final.startOffset);
+            else
+              onClipEndCommit(layer.id, final.clipEnd ?? bufDurRef.current);
           }
           return null; // clear drag visual
         });
@@ -206,7 +215,7 @@ const WaveRow: React.FC<WaveRowProps> = ({
       window.addEventListener('mousemove', onMove);
       window.addEventListener('mouseup', onUp);
     },
-    [layer, totalDuration, onOffsetCommit, onClipStartCommit, onClipEndCommit],
+    [layer, totalDuration, onOffsetCommit, onLeftTrimCommit, onClipEndCommit],
   );
 
   return (
@@ -304,9 +313,10 @@ const StudioTimeline: React.FC<StudioTimelineProps> = ({ playheadTime, totalDura
   }, [seek, effectiveDuration]);
 
   // Commit handlers — called only on mouseup, triggers one API call
-  const handleOffsetCommit    = useCallback((id: string, v: number) => updateLayer(id, { start_offset: v }), [updateLayer]);
-  const handleClipStartCommit = useCallback((id: string, v: number) => updateLayer(id, { clip_start: v }), [updateLayer]);
-  const handleClipEndCommit   = useCallback((id: string, v: number) => updateLayer(id, { clip_end: v }), [updateLayer]);
+  const handleOffsetCommit   = useCallback((id: string, v: number) => updateLayer(id, { start_offset: v }), [updateLayer]);
+  // Left trim moves both clip_start and start_offset atomically so the right edge stays fixed
+  const handleLeftTrimCommit = useCallback((id: string, cs: number, so: number) => updateLayer(id, { clip_start: cs, start_offset: so }), [updateLayer]);
+  const handleClipEndCommit  = useCallback((id: string, v: number) => updateLayer(id, { clip_end: v }), [updateLayer]);
 
   return (
     <div className="flex flex-1 overflow-hidden">
@@ -373,7 +383,7 @@ const StudioTimeline: React.FC<StudioTimelineProps> = ({ playheadTime, totalDura
             playheadTime={playheadTime}
             onBufferDuration={handleBufferDuration}
             onOffsetCommit={handleOffsetCommit}
-            onClipStartCommit={handleClipStartCommit}
+            onLeftTrimCommit={handleLeftTrimCommit}
             onClipEndCommit={handleClipEndCommit}
           />
         ))}

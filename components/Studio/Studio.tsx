@@ -22,10 +22,17 @@ const Studio: React.FC = () => {
     stop,
     seek,
     loadLayers,
+    updateLayersMetadata,
   } = useStudioAudio();
 
-  // Load audio engine when layers change — debounced so rapid updates
-  // (e.g. clip position saves) don't retrigger decode for unchanged audio URLs
+  // Sync layer metadata (clip points, volume, solo/mute) immediately so that
+  // play() always uses the latest values even before decode completes.
+  useEffect(() => {
+    if (!isOpen || layers.length === 0) return;
+    updateLayersMetadata(layers);
+  }, [isOpen, layers, updateLayersMetadata]);
+
+  // Re-decode only when audio URLs change — debounced to avoid redundant fetches
   const loadDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(() => {
     if (!isOpen || layers.length === 0) return;

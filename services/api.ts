@@ -412,6 +412,19 @@ export const trainingApi = {
     api('/api/training/import-dataset', { method: 'POST', body: { datasetType } }),
 };
 
+// System API
+
+export const systemApi = {
+  getHealth: (): Promise<{ healthy: boolean; aceStepUrl: string }> =>
+    api('/api/generate/health'),
+
+  getModels: (): Promise<{ models: Array<{ name: string; is_active: boolean; is_preloaded: boolean; is_downloading: boolean }> }> =>
+    api('/api/generate/models'),
+
+  downloadModel: (name: string): Promise<{ status: string; message?: string }> =>
+    api('/api/generate/models/download', { method: 'POST', body: { name } }),
+};
+
 // Workspace API
 
 export const workspacesApi = {
@@ -458,6 +471,10 @@ export const tracksApi = {
     api<{ jobId: string }>(`/api/tracks/${id}/split-stems`, { method: 'POST', body: params }),
   getStemJob: (id: string, jobId: string) =>
     api<{ status: 'running' | 'succeeded' | 'failed'; stems?: Stem[]; error?: string; elapsed: number }>(`/api/tracks/${id}/split-stems/${jobId}`),
+  demucs: (params: { audioUrl: string; model?: string; stems?: string[] }) =>
+    api<{ jobId: string }>(`/api/tracks/demucs`, { method: 'POST', body: params }),
+  getDemucsJob: (jobId: string) =>
+    api<{ status: 'running' | 'succeeded' | 'failed'; stems?: { instrument_class: string; audio_url: string }[]; error?: string; elapsed: number }>(`/api/tracks/demucs/${jobId}`),
 };
 
 // Stems API
