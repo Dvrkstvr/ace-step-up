@@ -148,6 +148,9 @@ const columnMigrations: Array<{ table: string; column: string; definition: strin
   { table: 'studio_layers', column: 'start_offset', definition: 'REAL DEFAULT 0' },
   { table: 'studio_layers', column: 'clip_start',   definition: 'REAL DEFAULT 0' },
   { table: 'studio_layers', column: 'clip_end',     definition: 'REAL' },
+  { table: 'tracks',        column: 'batch_id',     definition: 'TEXT' },
+  // row_id groups clip-layers onto the same timeline row; null = this layer is itself the row anchor
+  { table: 'studio_layers', column: 'row_id',       definition: 'TEXT' },
 ];
 
 function migrate(): void {

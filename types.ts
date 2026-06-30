@@ -40,6 +40,7 @@ export interface Track {
   tags: string[];
   stems?: Stem[];
   children?: Track[];
+  batch_id?: string;
   has_stems?: boolean;
   isGenerating?: boolean;
   progress?: number;
@@ -74,6 +75,8 @@ export interface StudioLayer {
   session_id: string;
   stem_id?: string;
   parent_layer_id?: string;
+  /** null = this layer IS the row anchor; set = this is a clip on row row_id */
+  row_id?: string | null;
   source_type: LayerSourceType;
   name: string;
   audio_url: string;
@@ -100,7 +103,20 @@ export interface RepaintParams {
   region_end: number;
   prompt?: string;
   style?: string;
+  lyrics?: string;
   instruction?: string;
+  audio_cover_strength?: number;
+  inference_steps?: number;
+  guidance_scale?: number;
+  shift?: number;
+  seed?: number;
+  use_random_seed?: boolean;
+  infer_method?: 'ode' | 'sde';
+  lm_temperature?: number;
+  lm_cfg_scale?: number;
+  lm_top_p?: number;
+  lm_top_k?: number;
+  lm_negative_prompt?: string;
 }
 
 // === Navigation ===

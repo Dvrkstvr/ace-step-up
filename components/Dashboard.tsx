@@ -606,16 +606,24 @@ const WorkspaceView: React.FC<WorkspaceViewProps> = ({ onSelectTrack, refreshKey
         </div>
 
         {(() => {
-          // A stemmed track ends its card group (gap comes after, not before).
-          // Consecutive no-stem tracks share a card; a stemmed track closes the current card.
-          type Group = { tracks: Track[] };
+          // Group tracks: batch tracks (same batch_id) form one group; others group by stem boundary.
+          type Group = { tracks: Track[]; batchId?: string };
           const groups: Group[] = [];
           for (const t of standaloneTracks) {
-            const last = groups[groups.length - 1];
-            if (!last || last.tracks[last.tracks.length - 1]?.has_stems) {
-              groups.push({ tracks: [t] });
+            if (t.batch_id) {
+              const last = groups[groups.length - 1];
+              if (last?.batchId === t.batch_id) {
+                last.tracks.push(t);
+              } else {
+                groups.push({ tracks: [t], batchId: t.batch_id });
+              }
             } else {
-              last.tracks.push(t);
+              const last = groups[groups.length - 1];
+              if (!last || last.batchId || last.tracks[last.tracks.length - 1]?.has_stems) {
+                groups.push({ tracks: [t] });
+              } else {
+                last.tracks.push(t);
+              }
             }
           }
 
@@ -643,22 +651,45 @@ const WorkspaceView: React.FC<WorkspaceViewProps> = ({ onSelectTrack, refreshKey
                 )}
               </div>
 
-              {groups.map((group, gi) => (
-                <div key={gi} className={`${cardCls} divide-y divide-zinc-100 dark:divide-white/5`}>
-                  {group.tracks.map(t => (
-                    <TrackRow
-                      key={t.id}
-                      track={t}
-                      onSelect={onSelectTrack}
-                      onRefresh={load}
-                      onCreateVariation={params => setVariationPrefill(params)}
-                      selected={selectedIds.has(t.id)}
-                      onToggleSelect={toggleSelect}
-                      selectionActive={selectedIds.size > 0}
-                    />
-                  ))}
-                </div>
-              ))}
+              {groups.map((group, gi) =>
+                group.batchId ? (
+                  /* Batch group — slight gap between items, pink left accent */
+                  <div key={gi} className="relative pl-2.5">
+                    {/* Left accent line */}
+                    <div className="absolute left-0 top-0 bottom-0 w-0.5 rounded-full bg-gradient-to-b from-pink-400 via-purple-400 to-pink-400 opacity-70" />
+                    <div className="space-y-1">
+                      {group.tracks.map(t => (
+                        <div key={t.id} className={`${cardCls} bg-gradient-to-r from-pink-50/60 dark:from-pink-500/[0.04] to-transparent`}>
+                          <TrackRow
+                            track={t}
+                            onSelect={onSelectTrack}
+                            onRefresh={load}
+                            onCreateVariation={params => setVariationPrefill(params)}
+                            selected={selectedIds.has(t.id)}
+                            onToggleSelect={toggleSelect}
+                            selectionActive={selectedIds.size > 0}
+                          />
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                ) : (
+                  <div key={gi} className={`${cardCls} divide-y divide-zinc-100 dark:divide-white/5`}>
+                    {group.tracks.map(t => (
+                      <TrackRow
+                        key={t.id}
+                        track={t}
+                        onSelect={onSelectTrack}
+                        onRefresh={load}
+                        onCreateVariation={params => setVariationPrefill(params)}
+                        selected={selectedIds.has(t.id)}
+                        onToggleSelect={toggleSelect}
+                        selectionActive={selectedIds.size > 0}
+                      />
+                    ))}
+                  </div>
+                )
+              )}
             </div>
           );
         })()}

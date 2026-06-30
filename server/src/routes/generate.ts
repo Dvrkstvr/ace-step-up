@@ -433,35 +433,43 @@ router.get('/status/:jobId', authMiddleware, async (req: AuthenticatedRequest, r
             });
 
             try {
-              const primaryAudioUrl = audioUrls[0];
-              if (primaryAudioUrl && !params.skipTrackCreate) {
-                const trackTitle = autoTitle(params);
+              if (audioUrls.length > 0 && !params.skipTrackCreate) {
+                const baseTitle = autoTitle(params);
                 const prompt = params.songDescription || params.style || '';
-                const trackId = generateUUID();
-                await pool.query(
-                  `INSERT INTO tracks (id, title, audio_url, workspace_id, project_id, parent_track_id, task_type, prompt, lyrics, style, duration, bpm, key_scale, time_signature, seed, parameters, tags, created_at, updated_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))`,
-                  [
-                    trackId,
-                    trackTitle,
-                    primaryAudioUrl,
-                    params.workspace_id || 'default',
-                    params.project_id || null,
-                    params.parent_track_id || null,
-                    params.taskType || null,
-                    prompt || null,
-                    params.lyrics || null,
-                    params.style || null,
-                    aceStatus.result.duration || params.duration || null,
-                    aceStatus.result.bpm || params.bpm || null,
-                    params.keyScale || null,
-                    params.timeSignature || null,
-                    params.seed || null,
-                    JSON.stringify(params),
-                    '[]',
-                  ]
-                );
-                aceStatus.result.track = { id: trackId, title: trackTitle, audio_url: primaryAudioUrl };
+                const batchId = audioUrls.length > 1 ? generateUUID() : null;
+                const createdTracks: { id: string; title: string; audio_url: string }[] = [];
+                for (let i = 0; i < audioUrls.length; i++) {
+                  const trackId = generateUUID();
+                  const trackTitle = audioUrls.length > 1 ? `${baseTitle} (${i + 1}/${audioUrls.length})` : baseTitle;
+                  await pool.query(
+                    `INSERT INTO tracks (id, title, audio_url, workspace_id, project_id, parent_track_id, task_type, prompt, lyrics, style, duration, bpm, key_scale, time_signature, seed, parameters, tags, batch_id, created_at, updated_at)
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))`,
+                    [
+                      trackId,
+                      trackTitle,
+                      audioUrls[i],
+                      params.workspace_id || 'default',
+                      params.project_id || null,
+                      params.parent_track_id || null,
+                      params.taskType || null,
+                      prompt || null,
+                      params.lyrics || null,
+                      params.style || null,
+                      aceStatus.result.duration || params.duration || null,
+                      aceStatus.result.bpm || params.bpm || null,
+                      params.keyScale || null,
+                      params.timeSignature || null,
+                      params.seed || null,
+                      JSON.stringify(params),
+                      '[]',
+                      batchId,
+                    ]
+                  );
+                  createdTracks.push({ id: trackId, title: trackTitle, audio_url: audioUrls[i] });
+                }
+                aceStatus.result.track = createdTracks[0];
+                aceStatus.result.tracks = createdTracks;
+                if (batchId) aceStatus.result.batchId = batchId;
               }
             } catch (trackErr) {
               console.error('Failed to create track record:', trackErr);

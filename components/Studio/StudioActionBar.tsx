@@ -10,7 +10,7 @@ const StudioActionBar: React.FC<StudioActionBarProps> = ({ onRepaint }) => {
 
   if (!selectedRegion) return null;
 
-  const layer = layers.find(l => l.id === selectedRegion.layerId);
+  const layer = layers.find(l => l.id === selectedRegion.rowId);
   const layerName = layer?.name ?? 'Unknown Layer';
 
   const fmt = (s: number) => s.toFixed(2);

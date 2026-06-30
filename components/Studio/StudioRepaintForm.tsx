@@ -10,8 +10,8 @@ interface StudioRepaintFormProps {
 const StudioRepaintForm: React.FC<StudioRepaintFormProps> = ({ onClose }) => {
   const { selectedRegion, layers } = useStudio();
 
-  const region = selectedRegion ?? { layerId: '', start: 0, end: 0 };
-  const layer = layers.find(l => l.id === region.layerId);
+  const region = selectedRegion ?? { rowId: '', start: 0, end: 0 };
+  const layer = layers.find(l => l.id === region.rowId);
 
   const [regionStart, setRegionStart] = useState(region.start);
   const [regionEnd, setRegionEnd] = useState(region.end);
@@ -29,20 +29,16 @@ const StudioRepaintForm: React.FC<StudioRepaintFormProps> = ({ onClose }) => {
     setError(null);
     setInfo(null);
     try {
-      await studioApi.repaintRegion(layer.id, {
+      const result = await studioApi.repaintRegion(layer.id, {
         region_start: regionStart,
         region_end: regionEnd,
         prompt: prompt || undefined,
         style: style || undefined,
       });
+      // repaintRegion returns { jobId, sessionId, parentLayerId }
+      setInfo(`Repaint queued (job ${result.jobId?.slice(0, 8)}…). Poll /api/generate/status/${result.jobId} and add the result as a new layer.`);
     } catch (err) {
-      const msg = err instanceof Error ? err.message : 'Request failed';
-      // 501 = not implemented yet
-      if (msg.startsWith('501')) {
-        setInfo('Repaint coming soon — the server endpoint is not yet implemented.');
-      } else {
-        setError(msg);
-      }
+      setError(err instanceof Error ? err.message : 'Request failed');
     } finally {
       setLoading(false);
     }

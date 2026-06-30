@@ -103,6 +103,13 @@ export function useStudioAudio(): StudioAudioEngine {
   const loadLayers = useCallback(async (layers: StudioLayer[]): Promise<void> => {
     layersRef.current = layers;
 
+    if (layers.length === 0) {
+      stopAllSources();
+      buffersRef.current = new Map();
+      setTotalDuration(0);
+      return;
+    }
+
     const ctx = getOrCreateContext();
     const existing = buffersRef.current;
     const next = new Map<string, LayerBuffer>();
@@ -136,6 +143,16 @@ export function useStudioAudio(): StudioAudioEngine {
 
     buffersRef.current = next;
     setTotalDuration(computeTotalDuration(layers, next));
+
+    // If playback is active when new buffers arrive, restart sources so the
+    // newly decoded clips are included without user having to press Stop/Play.
+    if (isPlayingRef.current && audioCtxRef.current && audioCtxRef.current.state !== 'closed') {
+      const ctx = audioCtxRef.current;
+      const currentPos = seekOffsetRef.current + (ctx.currentTime - startedAtRef.current);
+      seekOffsetRef.current = currentPos;
+      startedAtRef.current = ctx.currentTime;
+      createAndStartSources(ctx, currentPos);
+    }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -147,7 +164,11 @@ export function useStudioAudio(): StudioAudioEngine {
     const layers = layersRef.current;
     const buffers = buffersRef.current;
 
-    const anySolo = layers.some((l) => l.is_solo);
+    // Solo/mute/volume: child clips (row_id set) defer to their anchor row's settings
+    const anchorOf = (layer: StudioLayer): StudioLayer =>
+      layer.row_id ? (layers.find(l => l.id === layer.row_id) ?? layer) : layer;
+
+    const anySolo = layers.some((l) => !l.row_id && l.is_solo);
     const newSources: ActiveSource[] = [];
 
     for (const layer of layers) {
@@ -174,10 +195,11 @@ export function useStudioAudio(): StudioAudioEngine {
       const remainingDuration = effectiveDuration - clipPlaybackOffset;
       if (remainingDuration <= 0) continue;
 
-      // GainNode
+      // GainNode — child clips inherit anchor's mute/solo/volume
+      const ctrl = anchorOf(layer);
       const gain = ctx.createGain();
-      const shouldPlay = anySolo ? layer.is_solo : !layer.is_muted;
-      gain.gain.value = shouldPlay ? layer.volume : 0;
+      const shouldPlay = anySolo ? ctrl.is_solo : !ctrl.is_muted;
+      gain.gain.value = shouldPlay ? ctrl.volume : 0;
       gain.connect(ctx.destination);
 
       // SourceNode
@@ -274,7 +296,9 @@ export function useStudioAudio(): StudioAudioEngine {
     if (!isPlayingRef.current) return;
 
     const layers = layersRef.current;
-    const anySolo = layers.some((l) => l.is_solo);
+    const anySolo = layers.some((l) => !l.row_id && l.is_solo);
+    const anchorOf = (layer: StudioLayer): StudioLayer =>
+      layer.row_id ? (layers.find(l => l.id === layer.row_id) ?? layer) : layer;
 
     for (const { gain, layerId } of activeSourcesRef.current) {
       const layer = layers.find((l) => l.id === layerId);
@@ -282,8 +306,9 @@ export function useStudioAudio(): StudioAudioEngine {
         gain.gain.value = 0;
         continue;
       }
-      const shouldPlay = anySolo ? layer.is_solo : !layer.is_muted;
-      gain.gain.value = shouldPlay ? layer.volume : 0;
+      const ctrl = anchorOf(layer);
+      const shouldPlay = anySolo ? ctrl.is_solo : !ctrl.is_muted;
+      gain.gain.value = shouldPlay ? ctrl.volume : 0;
     }
   });
 

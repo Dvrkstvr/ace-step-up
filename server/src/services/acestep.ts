@@ -158,8 +158,8 @@ async function buildGradioArgs(params: GenerationParams): Promise<unknown[]> {
     params.randomSeed !== false,                                  //  8: Random Seed
     String(params.seed ?? -1),                                    //  9: Seed
     referenceAudio,                                               // 10: Reference Audio (filepath | null)
-    params.duration && params.duration > 0 ? params.duration : -1, // 11: Audio Duration (-1 = auto)
-    Math.min(Math.max(params.batchSize ?? 1, 1), 16),            // 12: Batch Size (clamped 1-16)
+    params.duration && params.duration > 0 ? Math.min(params.duration, 480) : -1, // 11: Audio Duration (capped 480s)
+    Math.min(Math.max(params.batchSize ?? 1, 1), 4),             // 12: Batch Size (clamped 1-4)
     sourceAudio,                                                  // 13: Source Audio (filepath | null)
     params.audioCodes || '',                                      // 14: LM Codes Hints
     params.repaintingStart ?? 0.0,                                // 15: Repainting Start
@@ -580,6 +580,18 @@ async function processGenerationViaGradio(
   // Collect audio file objects — prefer the "All Generated Files" list
   let audioFileObjects: Array<{ url?: string; path?: string; orig_name?: string }> = [];
 
+  console.log(`Job ${jobId}: Gradio data length=${data.length}`);
+  console.log(`Job ${jobId}: data[8] type=${typeof allFiles} isArray=${Array.isArray(allFiles)} length=${Array.isArray(allFiles) ? allFiles.length : 'n/a'}`);
+  if (Array.isArray(allFiles)) {
+    allFiles.forEach((f: any, i: number) => {
+      console.log(`  data[8][${i}]: orig_name=${f?.orig_name} path=${String(f?.path).slice(0, 60)} url=${String(f?.url).slice(0, 60)}`);
+    });
+  }
+  for (let i = 0; i < 8; i++) {
+    const f = data[i] as any;
+    if (f) console.log(`  data[${i}]: orig_name=${f?.orig_name} path=${String(f?.path).slice(0, 60)}`);
+  }
+
   if (Array.isArray(allFiles) && allFiles.length > 0) {
     audioFileObjects = allFiles.filter(
       (f: any) => f && (f.path || f.url) && isAudioFile(f.orig_name || f.path || '')
@@ -695,7 +707,7 @@ async function processGenerationViaRestAPI(
   const caption = params.style || 'pop music';
   const prompt = params.customMode ? caption : (params.songDescription || caption);
   const lyrics = params.instrumental ? '[Instrumental]' : (params.lyrics || '');
-  const batchSize = Math.min(Math.max(params.batchSize ?? 1, 1), 16);
+  const batchSize = Math.min(Math.max(params.batchSize ?? 1, 1), 4);
 
   // Ensure the requested model is loaded before generating
   if (params.ditModel) {
@@ -756,7 +768,7 @@ async function processGenerationViaRestAPI(
     // ACE-Step-specific generation params
     prompt,
     lyrics,
-    audio_duration: params.duration && params.duration > 0 ? params.duration : undefined,
+    audio_duration: params.duration && params.duration > 0 ? Math.min(params.duration, 480) : undefined,
     bpm: params.bpm && params.bpm > 0 ? params.bpm : undefined,
     key_scale: params.keyScale || undefined,
     time_signature: params.timeSignature || undefined,
@@ -783,64 +795,60 @@ async function processGenerationViaRestAPI(
   if (params.repaintingStart !== undefined) requestBody.repainting_start = params.repaintingStart;
   if (params.repaintingEnd !== undefined) requestBody.repainting_end = params.repaintingEnd;
 
-  // Generation can take several minutes — no timeout
-  const res = await fetch(`${ACESTEP_API}/v1/chat/completions`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(requestBody),
-  });
+  // The REST API only returns 1 audio per request regardless of batch_size.
+  // Fire batchSize parallel requests with batch_size=1 each to get all results.
+  const singleBody = { ...requestBody, batch_size: 1 };
 
-  if (!res.ok) {
-    const err = await res.text().catch(() => '');
-    throw new Error(`REST API generation failed: ${res.status} ${err}`);
-  }
+  type RestResponse = { choices?: Array<{ message?: { content?: string; audio?: Array<{ type: string; audio_url?: { url: string } }> } }> };
 
-  const data = await res.json() as {
-    choices?: Array<{
-      message?: {
-        content?: string;
-        audio?: Array<{ type: string; audio_url?: { url: string } }>;
-      };
-    }>;
-  };
+  const requests = Array.from({ length: batchSize }, () =>
+    fetch(`${ACESTEP_API}/v1/chat/completions`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(singleBody),
+    }).then(async r => {
+      if (!r.ok) throw new Error(`REST API generation failed: ${r.status} ${await r.text().catch(() => '')}`);
+      return r.json() as Promise<RestResponse>;
+    })
+  );
 
-  const choice = data.choices?.[0];
-  if (!choice) throw new Error('REST API returned no choices');
-
-  const audioItems = choice.message?.audio ?? [];
-  if (audioItems.length === 0) throw new Error('REST API returned no audio data');
+  const responses = await Promise.all(requests);
+  console.log(`Job ${jobId}: REST — ${batchSize} parallel requests completed`);
 
   await mkdir(AUDIO_DIR, { recursive: true });
 
   const audioUrls: string[] = [];
   let actualDuration = 0;
+  let metaContent: string | undefined;
 
-  for (let i = 0; i < audioItems.length; i++) {
-    const item = audioItems[i];
-    const dataUrl = item.audio_url?.url ?? '';
-    if (!dataUrl.startsWith('data:')) continue;
+  for (const data of responses) {
+    const choice = data.choices?.[0];
+    if (!metaContent && choice?.message?.content) metaContent = choice.message.content;
+    for (const item of choice?.message?.audio ?? []) {
+      const dataUrl = item.audio_url?.url ?? '';
+      if (!dataUrl.startsWith('data:')) continue;
 
-    const [, b64] = dataUrl.split(',', 2);
-    const buffer = Buffer.from(b64, 'base64');
-    const filename = `${jobId}_${i}.${audioFormat}`;
-    const destPath = path.join(AUDIO_DIR, filename);
-    await writeFile(destPath, buffer);
+      const [, b64] = dataUrl.split(',', 2);
+      const buffer = Buffer.from(b64, 'base64');
+      const idx = audioUrls.length;
+      const filename = `${jobId}_${idx}.${audioFormat}`;
+      const destPath = path.join(AUDIO_DIR, filename);
+      await writeFile(destPath, buffer);
 
-    if (i === 0) {
-      try {
-        const meta = await parseBuffer(buffer, { mimeType: `audio/${audioFormat}` });
-        if (meta.format.duration) actualDuration = Math.round(meta.format.duration);
-      } catch {
-        // leave actualDuration = 0, fall back to metadata field
+      if (idx === 0) {
+        try {
+          const meta = await parseBuffer(buffer, { mimeType: `audio/${audioFormat}` });
+          if (meta.format.duration) actualDuration = Math.round(meta.format.duration);
+        } catch { /* fallback to params.duration */ }
       }
+      audioUrls.push(`/audio/${filename}`);
     }
-    audioUrls.push(`/audio/${filename}`);
   }
 
   if (audioUrls.length === 0) throw new Error('REST API returned no decodable audio');
 
   // Parse metadata from the text content (BPM, Key, etc.)
-  const metas = parseGenerationDetails(choice.message?.content);
+  const metas = parseGenerationDetails(metaContent);
 
   job.status = 'succeeded';
   job.result = {
@@ -878,7 +886,7 @@ async function processGenerationViaPython(
     const jobOutputDir = path.join(ACESTEP_DIR, 'output', jobId);
     await mkdir(jobOutputDir, { recursive: true });
 
-    const durationToSend = params.duration && params.duration > 0 ? params.duration : 60;
+    const durationToSend = Math.round(params.duration && params.duration > 0 ? Math.min(params.duration, 480) : 60);
     const args = [
       '--prompt', prompt,
       '--duration', String(durationToSend),

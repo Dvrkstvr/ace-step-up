@@ -504,15 +504,44 @@ export const studioApi = {
     api<StudioLayer[]>(`/api/studio/sessions/${sessionId}/layers`),
   addLayer: (sessionId: string, data: Partial<StudioLayer> & { source_type: LayerSourceType; name: string; audio_url: string }) =>
     api<StudioLayer>(`/api/studio/sessions/${sessionId}/layers`, { method: 'POST', body: data }),
-  updateLayer: (layerId: string, data: Partial<Pick<StudioLayer, 'name' | 'volume' | 'is_muted' | 'is_solo' | 'sort_order' | 'start_offset' | 'clip_start' | 'clip_end'>>) =>
+  updateLayer: (layerId: string, data: Partial<Pick<StudioLayer, 'name' | 'volume' | 'is_muted' | 'is_solo' | 'sort_order' | 'start_offset' | 'clip_start' | 'clip_end' | 'row_id'>>) =>
     api<StudioLayer>(`/api/studio/layers/${layerId}`, { method: 'PATCH', body: data }),
   deleteLayer: (layerId: string) =>
     api<void>(`/api/studio/layers/${layerId}`, { method: 'DELETE' }),
 
   repaintRegion: (layerId: string, params: RepaintParams) =>
-    api<StudioLayer>(`/api/studio/layers/${layerId}/repaint`, { method: 'POST', body: params }),
+    api<{ jobId: string; sessionId: string; parentLayerId: string }>(`/api/studio/layers/${layerId}/repaint`, { method: 'POST', body: params }),
   generateOnLayer: (layerId: string, params: Partial<GenerationParams>) =>
     api<StudioLayer>(`/api/studio/layers/${layerId}/generate`, { method: 'POST', body: params }),
+  generateInRegion: (sessionId: string, params: {
+    row_id: string;
+    region_start: number;
+    region_end: number;
+    audio_duration: number;
+    prompt?: string;
+    style?: string;
+    lyrics?: string;
+    inference_steps?: number;
+    guidance_scale?: number;
+    seed?: number;
+    use_random_seed?: boolean;
+    infer_method?: 'ode' | 'sde';
+    reference_audio_url?: string;
+  }) =>
+    api<{ jobId: string; sessionId: string; rowId: string }>(`/api/studio/sessions/${sessionId}/generate-clip`, { method: 'POST', body: params }),
+  composeInRegion: (sessionId: string, params: {
+    context_clip_ids: string[];
+    region_start: number;
+    region_end: number;
+    style?: string;
+    lyrics?: string;
+    inference_steps?: number;
+    guidance_scale?: number;
+    seed?: number;
+    use_random_seed?: boolean;
+    infer_method?: 'ode' | 'sde';
+  }) =>
+    api<{ jobId: string; sessionId: string }>(`/api/studio/sessions/${sessionId}/compose`, { method: 'POST', body: params }),
   revertLayer: (layerId: string) =>
     api<StudioLayer>(`/api/studio/layers/${layerId}/revert`, { method: 'POST' }),
 

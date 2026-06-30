@@ -25,7 +25,10 @@ const StudioLayerPanel: React.FC = () => {
   const addButtonRef = useRef<HTMLButtonElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  const sorted = [...layers].sort((a, b) => a.sort_order - b.sort_order);
+  // Only show row anchors (clips on a row are row_id != null)
+  const sorted = [...layers]
+    .filter(l => !l.row_id)
+    .sort((a, b) => a.sort_order - b.sort_order);
   const nextOrder = layers.length;
 
   // Close popover on outside click
@@ -63,8 +66,21 @@ const StudioLayerPanel: React.FC = () => {
     await updateLayer(layer.id, { is_muted: !layer.is_muted }).catch(console.error);
   };
 
-  const handleSolo = async (layer: StudioLayer) => {
-    await updateLayer(layer.id, { is_solo: !layer.is_solo }).catch(console.error);
+  const handleSolo = async (layer: StudioLayer, additive: boolean) => {
+    if (additive) {
+      // Shift+click: toggle this layer only
+      await updateLayer(layer.id, { is_solo: !layer.is_solo }).catch(console.error);
+    } else {
+      // Click: exclusive solo — enable only this layer, disable all others
+      const newSolo = !layer.is_solo;
+      await Promise.all(
+        sorted.map(l => {
+          const target = l.id === layer.id ? newSolo : false;
+          if ((l.is_solo ? true : false) === target) return Promise.resolve();
+          return updateLayer(l.id, { is_solo: target }).catch(console.error);
+        }),
+      );
+    }
   };
 
   const handleDelete = async (layer: StudioLayer) => {
@@ -192,7 +208,7 @@ const StudioLayerPanel: React.FC = () => {
       <div className="flex-1 overflow-y-auto">
         {sorted.length === 0 && (
           <div className="px-4 py-8 text-center text-xs text-zinc-400 dark:text-zinc-500">
-            No layers yet.<br />
+            No tracks yet.<br />
             Click <strong>Add</strong> to get started.
           </div>
         )}
@@ -260,7 +276,8 @@ const StudioLayerPanel: React.FC = () => {
                 M
               </button>
               <button
-                onClick={() => handleSolo(layer)}
+                onClick={e => handleSolo(layer, e.shiftKey)}
+                title="Solo (Shift+click for additive)"
                 className={`w-5 h-5 rounded text-[10px] font-bold transition-colors flex items-center justify-center flex-shrink-0 ${
                   layer.is_solo
                     ? 'bg-green-400 dark:bg-green-500 text-black'

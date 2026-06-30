@@ -375,6 +375,8 @@ export default function InlineNewTrack({ workspaceId, projectId, onTrackCreated,
         thinking: thinking || lyricsMode === 'prompt', audioFormat: 'mp3', inferMethod: 'ode',
         shift, lmTemperature, lmCfgScale: 2.0, lmTopK: 0, lmTopP: 0.9, lmNegativePrompt: '',
         ditModel, lmModel: lmModel || undefined, taskType,
+        workspace_id: workspaceId,
+        ...(projectId ? { project_id: projectId } : {}),
         ...(sourceAudioUrl && taskType !== 'text2music' ? { sourceAudioUrl } : {}),
       });
 
@@ -995,9 +997,24 @@ export default function InlineNewTrack({ workspaceId, projectId, onTrackCreated,
     </div>
   );
 
+  const batchPlaceholders = isGenerating && batchSize > 1
+    ? Array.from({ length: batchSize - 1 }, (_, i) => (
+        <div key={i} className="flex items-center gap-3 px-3 py-2 border-t border-zinc-100 dark:border-white/5">
+          <div className="w-8 h-8 rounded-full flex-shrink-0 flex items-center justify-center bg-pink-100 dark:bg-pink-500/20 text-pink-500">
+            <Loader2 size={14} className="animate-spin" />
+          </div>
+          <div className="flex-1 min-w-0">
+            <p className="text-sm font-medium text-zinc-600 dark:text-zinc-400 truncate">Generating...</p>
+            {caption && <p className="text-xs text-zinc-400 dark:text-zinc-500 truncate mt-0.5">{caption}</p>}
+          </div>
+        </div>
+      ))
+    : null;
+
   return (
     <div className={`group transition-all ${isOpen ? 'bg-zinc-50 dark:bg-black/20' : ''}`}>
       {rowContent}
+      {batchPlaceholders}
       {progressBar}
       {expandedForm}
     </div>

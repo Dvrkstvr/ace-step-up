@@ -1,17 +1,14 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useRef, useCallback } from 'react';
 import { ArrowLeft } from 'lucide-react';
 import { useStudio } from '../../context/StudioContext';
 import { useStudioAudio } from '../../hooks/useStudioAudio';
 import StudioLayerPanel from './StudioLayerPanel';
-import StudioToolsPanel from './StudioToolsPanel';
-import StudioActionBar from './StudioActionBar';
-import StudioRepaintForm from './StudioRepaintForm';
+import StudioBottomPanel from './StudioBottomPanel';
 import StudioTransport from './StudioTransport';
 import StudioTimeline from './StudioTimeline';
 
 const Studio: React.FC = () => {
-  const { isOpen, session, closeStudio, selectedRegion, layers } = useStudio();
-  const [showRepaint, setShowRepaint] = useState(false);
+  const { isOpen, session, closeStudio, selectedRegion, setSelectedRegion, layers, activeTool, setActiveTool, setSeekPlayhead } = useStudio();
 
   const {
     isPlaying,
@@ -25,17 +22,24 @@ const Studio: React.FC = () => {
     updateLayersMetadata,
   } = useStudioAudio();
 
+  // Register seek into context so child components (e.g. StudioBottomPanel) can seek the playhead
+  useEffect(() => {
+    setSeekPlayhead(seek);
+    return () => setSeekPlayhead(null);
+  }, [seek, setSeekPlayhead]);
+
   // Sync layer metadata (clip points, volume, solo/mute) immediately so that
   // play() always uses the latest values even before decode completes.
   useEffect(() => {
-    if (!isOpen || layers.length === 0) return;
+    if (!isOpen) return;
     updateLayersMetadata(layers);
   }, [isOpen, layers, updateLayersMetadata]);
 
-  // Re-decode only when audio URLs change — debounced to avoid redundant fetches
+  // Re-decode only when audio URLs change — debounced to avoid redundant fetches.
+  // Always runs (even with empty layers) so deleted layers are purged from the engine.
   const loadDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(() => {
-    if (!isOpen || layers.length === 0) return;
+    if (!isOpen) return;
     if (loadDebounceRef.current) clearTimeout(loadDebounceRef.current);
     loadDebounceRef.current = setTimeout(() => {
       loadLayers(layers).catch(console.error);
@@ -45,16 +49,42 @@ const Studio: React.FC = () => {
     };
   }, [isOpen, layers, loadLayers]);
 
-  // Close on Escape
+  // Space = play/pause; double-space = stop to beginning
+  const lastSpaceRef = useRef<number>(0);
+
+  // Tool shortcuts + Escape + Space transport
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') closeStudio();
+      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
+
+      if (e.key === ' ') {
+        e.preventDefault();
+        const now = Date.now();
+        if (now - lastSpaceRef.current < 300) {
+          // Double-space → stop + return to beginning
+          stop();
+          lastSpaceRef.current = 0;
+        } else {
+          // Single space → play/pause toggle
+          if (isPlaying) pause(); else play();
+          lastSpaceRef.current = now;
+        }
+        return;
+      }
+
+      if (e.key === 'v' || e.key === 'V') { setActiveTool('move');   return; }
+      if (e.key === 's' || e.key === 'S') { setActiveTool('select'); return; }
+      if (e.key === 'c' || e.key === 'C') { setActiveTool('cut');    return; }
+      if (e.key === 'Escape') {
+        if (selectedRegion) { setSelectedRegion(null); return; }
+        closeStudio();
+      }
     };
     if (isOpen) {
       window.addEventListener('keydown', handler);
       return () => window.removeEventListener('keydown', handler);
     }
-  }, [isOpen, closeStudio]);
+  }, [isOpen, isPlaying, play, pause, stop, closeStudio, activeTool, setActiveTool, selectedRegion, setSelectedRegion]);
 
   if (!isOpen) return null;
 
@@ -101,14 +131,11 @@ const Studio: React.FC = () => {
         seek={seek}
       />
 
-      {/* Three-column layout */}
+      {/* Two-column layout: layer panel + timeline */}
       <div className="flex flex-1 overflow-hidden">
-        {/* Left: Layer panel (256px) */}
         <div className="w-64 flex-shrink-0 overflow-hidden flex flex-col">
           <StudioLayerPanel />
         </div>
-
-        {/* Center: Timeline (flex-1) */}
         <div className="flex-1 overflow-hidden flex flex-col">
           <StudioTimeline
             playheadTime={playheadTime}
@@ -116,22 +143,10 @@ const Studio: React.FC = () => {
             seek={seek}
           />
         </div>
-
-        {/* Right: Tools panel (192px) */}
-        <div className="w-48 flex-shrink-0 overflow-hidden flex flex-col">
-          <StudioToolsPanel />
-        </div>
       </div>
 
-      {/* Bottom: Action bar (shown when region is selected) */}
-      {selectedRegion && (
-        <StudioActionBar onRepaint={() => setShowRepaint(true)} />
-      )}
-
-      {/* Repaint form (opened from action bar) */}
-      {showRepaint && (
-        <StudioRepaintForm onClose={() => setShowRepaint(false)} />
-      )}
+      {/* Bottom: context-sensitive tools + repaint form */}
+      <StudioBottomPanel />
     </div>
   );
 };
